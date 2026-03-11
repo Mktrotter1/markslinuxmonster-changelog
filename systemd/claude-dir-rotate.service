@@ -1,0 +1,8 @@
+[Unit]
+Description=Claude Code ~/.claude/ directory rotation (7-day / 500 MB cap)
+
+[Service]
+Type=oneshot
+ExecStart=/home/mark/repos/Mktrotter1/markslinuxmonster-changelog/scripts/claude-dir-rotate.sh
+StandardOutput=journal
+StandardError=journal

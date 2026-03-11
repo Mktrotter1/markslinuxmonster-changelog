@@ -2,6 +2,58 @@
 
 ---
 
+## 2026-03-11T17:24:00Z — ~/.claude/ Rotation Rule Enforcement
+
+**Trigger**: Previous session discovered ~/.claude/ had grown to 1.9 GB (1,092 session JSONLs, 246 MB debug, 70 MB telemetry) causing 5-15 second Claude Code startup lag. Manual cleanup brought it to 7.3 MB. This session adds automated rotation to prevent recurrence.
+
+**Root Cause**: The workspace rule "Rotate by size (10 MB) or time (7 days), never silently discard" was being applied to application logs but never to Claude Code's own ~/.claude/ directory. Session transcripts, debug logs, and telemetry accumulated indefinitely.
+
+### What Was Created
+
+| File | Purpose |
+|------|---------|
+| `scripts/claude-dir-rotate.sh` | 4-phase rotation script with `--dry-run` flag |
+| `systemd/claude-dir-rotate.timer` | Daily systemd user timer (randomized 5-min delay) |
+| `systemd/claude-dir-rotate.service` | Oneshot service, output to journal |
+| `logs/.gitkeep` | Ensures logs dir exists in git |
+| `.gitignore` | Excludes `logs/*.jsonl` from version control |
+
+### Rotation Phases
+
+1. **Time-based cleanup (7-day TTL)**: Session JSONLs, UUID dirs, debug `.txt`, telemetry, file-history, ephemeral dirs (todos, plans, tasks, backups, paste-cache, shell-snapshots, session-env). Empty dirs cleaned up.
+2. **history.jsonl truncation**: If over 10 MB, keep last 1000 lines via atomic `tail` + `mv`.
+3. **Hard cap (500 MB)**: If still over cap, delete oldest session JSONLs until under.
+4. **Audit log**: JSONL entry at `logs/claude-dir-rotate.jsonl` with bytes reclaimed + final size.
+
+### Protected (never touched)
+
+`settings.json`, `settings.local.json`, `.credentials.json`, `CLAUDE.md` symlink, `SKILLS.md`, `DIRECTORY.md`, `CROSS_PROJECT.md`, `skills/`, `plugins/`, `cache/`, `commands/`, any `*/memory/*` path.
+
+### Installation
+
+```bash
+chmod +x scripts/claude-dir-rotate.sh
+ln -sf $(pwd)/systemd/claude-dir-rotate.service ~/.config/systemd/user/
+ln -sf $(pwd)/systemd/claude-dir-rotate.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now claude-dir-rotate.timer
+```
+
+### Verification
+
+- `--dry-run`: clean JSONL output, no deletions
+- Manual run: completed, audit log written
+- Timer: active (waiting), next trigger midnight UTC
+- Service: `status=0/SUCCESS` via both manual and timer-triggered runs
+- Journal output: clean, all 4 phases logged
+- Protected files confirmed untouched
+
+### Updated
+
+- `CLAUDE.md`: Added `claude-dir-rotate.timer` to Key Services, `scripts/claude-dir-rotate.sh` to Important Paths
+
+---
+
 ## 2026-03-11T14:22:00Z — System Health Audit & Remediation
 
 **Trigger**: Claude Code was slow to start. User requested deep dive with systemic health scan and crash report review.

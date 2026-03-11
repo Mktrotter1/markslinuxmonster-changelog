@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily rotation of Claude Code ~/.claude/ directory
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

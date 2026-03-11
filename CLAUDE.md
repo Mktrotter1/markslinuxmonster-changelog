@@ -77,6 +77,7 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | `bluetooth.service` | Startup | Boot | BlueZ 5.86 |
 | `NetworkManager.service` | Startup | Boot | Network management, ~1s startup |
 | `NetworkManager-wait-online.service` | Startup | Boot | Blocks boot for ~7.6s (critical chain bottleneck) |
+| `claude-dir-rotate.timer` | Timer | Daily | Rotates ~/.claude/ session/debug/telemetry files (7-day TTL, 500 MB cap) |
 
 ### Boot Timing
 
@@ -95,6 +96,7 @@ Critical chain bottleneck: NetworkManager-wait-online.service (7.6s)
 | `/etc/systemd/coredump.conf.d/limits.conf` | Custom coredump storage limits |
 | `/var/lib/systemd/coredump/` | Coredump storage (capped at 1 GB) |
 | `~/.config/systemd/user/drkonqi-coredump-pickup.socket` | Masked (symlink to /dev/null) |
+| `scripts/claude-dir-rotate.sh` | ~/.claude/ rotation script (7-day TTL, 500 MB cap) |
 
 ## Known Issues (Persistent)
 
