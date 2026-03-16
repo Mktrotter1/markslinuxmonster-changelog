@@ -14,8 +14,10 @@ Launch Claude Code from this directory for full machine context when doing syste
 | RAM | 32 GB DDR5 @ 4800 MT/s — 2x 16 GB G.SKILL F5-6000J3038F16G (slots 2 & 4) |
 | GPU | NVIDIA GeForce RTX 5060 (GB206, rev a1) — PCIe slot 01:00.0 |
 | Storage | WD Blue SN580 500 GB NVMe (S/N: 234317805732, FW: 281010WD) |
-| Bluetooth | Realtek RTL8851BU USB dongle (USB 1-7) |
-| Network | Onboard Ethernet (enp7s0), WiFi (wlan0, currently down), WireGuard (wg0) |
+| Bluetooth | Realtek USB (VID:PID 0bda:b850, firmware rtl_bt/rtl8851bu_fw.bin) — USB 1-7, btusb+btrtl drivers |
+| WiFi | Realtek RTL8851BE PCIe 802.11ax (08:00.0) — rtw89_8851be driver, interface wlan0 (down) |
+| Network | Realtek RTL8125 2.5GbE (enp7s0), WireGuard (wg0) |
+| GPU Driver | NVIDIA Open 590.48.01 (nvidia-open-dkms) |
 
 ### Display Setup
 
@@ -35,11 +37,14 @@ Dual-monitor, side-by-side, combined 5120x1440 @ 96 DPI:
 | Desktop | KDE Plasma 6.6.2 / KWin Wayland (DRM backend) |
 | Display Server | Wayland (kwin_wayland) with XWayland |
 | systemd | 259.3 |
-| BlueZ | 5.86 |
+| BlueZ | 5.86-4 |
+| NVIDIA Driver | 590.48.01 (open-dkms) |
+| CUDA | 13.1.1 |
+| Ollama | 0.17.7 (ollama-cuda, systemd service, enabled) |
 | Docker | 29.3.0 |
 | Node.js | 25.7.0 |
 | npm | 11.11.0 |
-| Python | 3.14 |
+| Python | 3.14.3 |
 | Go | 1.26.1 |
 | Rust | 1.94.0 |
 | Claude Code | 2.1.47 |
@@ -52,7 +57,7 @@ Dual-monitor, side-by-side, combined 5120x1440 @ 96 DPI:
 /dev/nvme0n1p2  /home                  btrfs   subvol=/@home
 /dev/nvme0n1p2  /var/cache/pacman/pkg  btrfs   subvol=/@pkg
 /dev/nvme0n1p2  /var/log               btrfs   subvol=/@log
-/dev/zram0      [swap]                 zram    16 GB
+/dev/zram0      [swap]                 zram    15.5 GB (zstd compression)
 ```
 
 Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
@@ -71,19 +76,26 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | Service | Type | Schedule | Notes |
 |---------|------|----------|-------|
 | `odoo-sync-sheets-all.timer` | Timer | Every 15 min | Syncs 7 Google Sheets to Odoo 19 Enterprise |
+| `odoo-sync-appsheet-sheet.timer` | Timer | Every 15 min | Odoo AppSheet Product Sheet Sync |
+| `odoo-sync-supervisor.timer` | Timer | Every 15 min | Odoo Cutting Plan Sync — Supervisor |
 | `odoo-nabis-order-sync.timer` | Timer | Every 60 min | Nabis order sync to Odoo |
+| `odoo-sync-admin.timer` | Timer | Daily 5AM | Odoo Cutting Plan Sync — Admin |
+| `ollama.service` | Startup | Boot | Ollama LLM server (CUDA-accelerated) |
 | `wg-quick@wg0.service` | Startup | Boot | WireGuard VPN |
 | `docker.service` | Startup | Boot | Container runtime, depends on network-online |
-| `bluetooth.service` | Startup | Boot | BlueZ 5.86 |
+| `bluetooth.service` | Startup | Boot | BlueZ 5.86-4 |
 | `NetworkManager.service` | Startup | Boot | Network management, ~1s startup |
-| `NetworkManager-wait-online.service` | Startup | Boot | Blocks boot for ~7.6s (critical chain bottleneck) |
-| `claude-dir-rotate.timer` | Timer | Daily | Rotates ~/.claude/ session/debug/telemetry files (7-day TTL, 500 MB cap) |
+| `NetworkManager-wait-online.service` | Startup | Boot | Blocks boot for ~7.8s (critical chain bottleneck) |
+| `claude-dir-rotate.timer` | Timer (user) | Daily | Rotates ~/.claude/ session/debug/telemetry files (7-day TTL, 500 MB cap) |
+| `github-auto-pull.timer` | Timer (user) | Daily | Auto-pulls GitHub repos |
 
 ### Boot Timing
 
 ```
-Total: ~39s (firmware 15.5s + loader 2.5s + kernel 9.8s + userspace 11.1s)
-Critical chain bottleneck: NetworkManager-wait-online.service (7.6s)
+To graphical.target: ~36s (firmware 15.8s + loader 3.5s + kernel 4.9s + userspace 11.4s)
+systemd-analyze total: ~1m24s (inflated by post-graphical Odoo sync timers firing at boot)
+Critical chain bottleneck: NetworkManager-wait-online.service (7.8s)
+Top blame: odoo-sync-sheets-all.service 44s, odoo-nabis-order-sync 8.8s, NM-wait-online 7.8s
 ```
 
 ## Important Paths
@@ -93,24 +105,37 @@ Critical chain bottleneck: NetworkManager-wait-online.service (7.6s)
 | `/home/mark/repos/` | All project repos |
 | `/home/mark/repos/Mktrotter1/odoo-api-pushing/` | Odoo sync scripts (sheets, orders) |
 | `/home/mark/repos/Mktrotter1/claude-skills/` | Claude Code skills repo |
-| `/etc/systemd/coredump.conf.d/limits.conf` | Custom coredump storage limits |
 | `/var/lib/systemd/coredump/` | Coredump storage (capped at 1 GB) |
-| `~/.config/systemd/user/drkonqi-coredump-pickup.socket` | Masked (symlink to /dev/null) |
+| `~/.config/systemd/user/drkonqi-coredump-pickup.socket` | Masked (symlink to /dev/null) — boot-time crash pickup |
+| `~/.config/systemd/user/drkonqi-coredump-launcher.socket` | Masked (symlink to /dev/null) — real-time crash handler activation |
+| `~/.config/systemd/user/drkonqi-coredump-launcher.socket.d/ratelimit.conf` | Ratelimit drop-in (inert while socket masked): TriggerLimitBurst=5, TriggerLimitIntervalSec=30s |
 | `scripts/claude-dir-rotate.sh` | ~/.claude/ rotation script (7-day TTL, 500 MB cap) |
+| `/etc/systemd/coredump.conf.d/limits.conf` | Coredump limits: MaxUse=1G, KeepFree=2G, ExternalSizeMax=512M, ProcessSizeMax=256M |
 
 ## Known Issues (Persistent)
 
 ### Cosmetic / Won't Fix
 
-- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` every boot. RTL8851BU kernel driver doesn't support the MGMT Set System Configuration command. Adapter works fine. Upstream BlueZ issue.
+- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` every boot. Realtek BT USB adapter's btrtl driver doesn't support the MGMT Set System Configuration command. Adapter works fine. Upstream BlueZ issue.
+- **rtw89_8851be "MAC has already powered on"**: Kernel error at boot from WiFi PCIe driver. Cosmetic — interface works if brought up. WiFi currently unused (wlan0 down).
 
-### Masked / Awaiting Upstream Fix
+### Fully Disabled — Awaiting Upstream Fix
 
-- **drkonqi 6.6.2 crash loop regression**: `drkonqi-coredump-launcher` segfaults in `QTextDocumentFragment::fromHtml()` via `libKF6Notifications.so.6` when processing crash notification HTML. Creates recursive crash loop (crash handler crashes, spawning another crash handler). Socket masked at user level since 2026-03-11. **Check on each Plasma update**: `pacman -Qi drkonqi` — if version > 6.6.2-1, try `systemctl --user unmask drkonqi-coredump-pickup.socket` and monitor.
+- **drkonqi 6.6.1+ crash loop regression**: `drkonqi-coredump-launcher` segfaults in `QTextDocumentFragment::fromHtml()` via `libKF6Notifications.so.6` when processing crash notification HTML. Creates recursive crash loop. Regression started with drkonqi 6.6.1-1 (installed 2026-03-02, crashes began by 2026-03-05). Both activation paths are now masked:
+  - **Boot-time pickup**: `drkonqi-coredump-pickup.socket` — masked since 2026-03-11
+  - **Real-time launcher**: `drkonqi-coredump-launcher.socket` — masked since 2026-03-13 (was ratelimited 2026-03-12 to 2026-03-13)
+  - Crash diagnostics remain fully available via `coredumpctl` and `journalctl`. Only the KDE crash GUI dialog is disabled.
+  - **Check on each Plasma update**: `pacman -Qi drkonqi` — if version > 6.6.2-1, unmask both sockets and monitor:
+    ```
+    systemctl --user unmask drkonqi-coredump-pickup.socket drkonqi-coredump-launcher.socket
+    systemctl --user start drkonqi-coredump-launcher.socket
+    ```
 
 ### Application-Level
 
-- **Odoo Blend Rates Sync**: `scheduled_sheets_sync_all.py` writes `active` field to Odoo `x_blend_target` model which doesn't have that field. Throws `ValueError: Invalid field 'active' in 'x_blend_target'`. 6/7 syncs pass, 1 fails. Fix in `odoo-api-pushing`.
+- **KWallet disabled** (2026-03-16): kwalletd6 enters zombie state — responds to `isEnabled` but hangs on all wallet access (`wallets`, `isOpen`, `open`). Portal registration fails (`App info not found for 'org.kde.kwalletd'`). Disabled via `~/.config/kwalletrc` (`Enabled=false`). Chromium uses `--password-store=basic` via `~/.config/chromium-flags.conf`. Old wallet backed up to `~/.local/share/kwalletd/backup-20260316/`. Re-enable after Plasma update and test via KDE Wallet Manager GUI with PAM auto-unlock.
+- **Bambu Studio bus_lock trap spam**: `bambustu_main` (Flatpak com.bambulab.BambuStudio 2.5.0.66) triggers `x86/split lock detection: #DB` kernel warnings every ~30 seconds while running. ~10 traps per burst, `handle_bus_lock` suppression messages in between. Cosmetic performance warning — split-lock operations are slow but functional. Upstream Bambu Studio issue.
+- **Chromium renderer crashes**: Renderer subprocesses occasionally crash (SIGILL/SIGTRAP). Coredumps are truncated at 53+ MB. Not a regression — has been occurring across boots. Monitor frequency.
 
 ## User Groups
 

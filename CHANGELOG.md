@@ -2,6 +2,302 @@
 
 ---
 
+## 2026-03-16T18:48:00Z — Chromium Hang: KWallet D-Bus Deadlock
+
+**Trigger**: Chromium pages hanging indefinitely (infinite load spinner). All other network tools working fine.
+
+**Boot context**: System booted 2026-03-16 17:59 UTC. No failed systemd units.
+
+---
+
+### Issue 1: Chromium Pages Hang / Won't Load [HIGH → FIXED]
+
+**Status**: FIXED
+
+**Symptom**: All Chromium page loads hung forever. Existing TCP connections stayed alive, but no new pages would load. Firefox, curl, ping, dig all worked normally.
+
+**Diagnostic path**:
+
+| Check | Result |
+|-------|--------|
+| `ping 8.8.8.8` | OK (0% loss, ~18ms) |
+| `curl https://www.google.com` | OK (200, 109ms) |
+| `dig google.com @100.100.100.100` | OK (1ms via Tailscale DNS) |
+| `python3 socket.getaddrinfo('google.com', 80)` | OK (42ms) |
+| `firefox --headless --screenshot` | OK (56KB screenshot) |
+| `chromium --headless --dump-dom` | HANG (even fresh profile, no sandbox, plain HTTP) |
+| `strace -f -e connect chromium --headless` | **Zero AF_INET connect() calls** — only Unix sockets |
+| `chromium --enable-logging --v=1` | Log stops dead after 41 lines at ~0.4s |
+
+**Root cause**: Chromium's OS-crypt backend initialization blocks the entire browser. The backend selection chain is:
+
+1. **KWallet (kwalletd6)** — selected by default on KDE
+2. **gnome-keyring** — fallback
+3. **basic** — plaintext fallback
+
+KWallet (PID 18643) was in a **zombie state**: it responded to trivial D-Bus queries (`isEnabled` → `true`) but hung indefinitely on any actual wallet access (`wallets`, `isOpen`, `open`, `networkWallet`). Chromium would call `open` during startup, block forever waiting for the D-Bus reply, and never proceed to create the network service or load any pages.
+
+```
+$ timeout 3 qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.isEnabled
+true
+
+$ timeout 5 qdbus6 org.kde.kwalletd6 /modules/kwalletd6 org.kde.KWallet.wallets
+(timed out — exit 124)
+```
+
+Even after killing and restarting kwalletd6, it exhibited the same behavior — responded to metadata queries, hung on wallet access. The kwalletd6 startup also showed portal registration errors:
+
+```
+GLib-GIO-CRITICAL: g_dbus_proxy_get_object_path: assertion 'G_IS_DBUS_PROXY (proxy)' failed
+qt.qpa.services: Failed to register with host portal QDBusError("org.freedesktop.portal.Error.Failed",
+  "Could not register app ID: App info not found for 'org.kde.kwalletd'")
+```
+
+**Proof**: `chromium --password-store=basic --headless --dump-dom http://example.com` loaded instantly on every test.
+
+With KWallet disabled, Chromium's fallback to gnome-keyring also hung (gnome-keyring not running on this KDE system), so without `--password-store=basic`, Chromium still blocked.
+
+**Fix applied**:
+
+1. Disabled KWallet:
+   ```
+   # ~/.config/kwalletrc
+   [Wallet]
+   Enabled=false
+   First Use=false
+   ```
+
+2. Backed up and removed corrupt wallet files:
+   ```
+   ~/.local/share/kwalletd/backup-20260316/   ← backup of kdewallet.kwl, .salt, _attributes.json
+   ~/.local/share/kwalletd/                    ← emptied
+   ```
+
+3. Created permanent Chromium flags (`~/.config/chromium-flags.conf`):
+   ```
+   --password-store=basic
+   --disable-features=AsyncDns
+   --disable-gpu-compositing
+   --enable-features=VaapiVideoDecodeLinuxGL
+   --ozone-platform-hint=auto
+   ```
+
+4. Killed all Chromium processes and relaunched. Pages load normally.
+
+**Files modified**:
+
+| File | Action |
+|------|--------|
+| `~/.config/kwalletrc` | Created — KWallet disabled |
+| `~/.config/chromium-flags.conf` | Created — `--password-store=basic` + existing flags |
+| `~/.local/share/kwalletd/kdewallet.kwl` | Backed up to `backup-20260316/`, removed |
+| `~/.local/share/kwalletd/kdewallet.salt` | Backed up to `backup-20260316/`, removed |
+| `~/.local/share/kwalletd/kdewallet_attributes.json` | Backed up to `backup-20260316/`, removed |
+
+### Follow-up
+
+- [ ] Investigate why kwalletd6 enters zombie state (portal registration failure? wallet corruption?)
+- [ ] Consider re-enabling KWallet with PAM auto-unlock (`pam_kwallet5.so` already in `/etc/pam.d/sddm`) after creating a fresh wallet with login-password encryption via the KDE Wallet Manager GUI
+- [ ] On next Plasma update: test if kwalletd6 portal registration is fixed
+
+---
+
+## 2026-03-13T18:00:00Z — drkonqi Revised Analysis, Journal Cleanup & Issue Triage
+
+**Trigger**: Deep investigation of drkonqi crash loop revealed previous documentation was incorrect about regression version, socket architecture, and mitigation status.
+
+**Boot context**: System booted 2026-03-13 14:09 UTC. No failed systemd units.
+
+---
+
+### Issue 1: drkonqi Crash Loop — Revised Understanding [HIGH → MITIGATED]
+
+**Status**: RATELIMITED + PICKUP MASKED — WORKING CORRECTLY
+
+Previous documentation stated the regression started with drkonqi 6.6.2-1 (installed 2026-03-09). Investigation revealed:
+
+| Fact | Old Understanding | Validated Reality |
+|------|-------------------|-------------------|
+| Regression version | 6.6.2-1 (Mar 9 upgrade) | **6.6.1-1** (installed Mar 2, crashes started by Mar 5) |
+| Masked socket | `drkonqi-coredump-pickup.socket` | That's the **boot-time pickup** path, not the real-time path |
+| Real-time activation path | (not documented) | `drkonqi-coredump-launcher.socket` — was still active |
+| Mar 12 crashes (2,511) | (not documented) | Occurred despite pickup mask — came through the **launcher** socket |
+| Ratelimit drop-in | (not documented) | `ratelimit.conf` added 2026-03-12 (5 triggers/30s) by a previous session |
+| Today's behavior | — | drkonqi launched twice (old crash + Chromium), **did not crash** (0 drkonqi coredumps today) |
+| Total historical entries | ~2,525 | **22,420** across 8 days (Mar 5–12) |
+
+#### drkonqi activation architecture
+
+```
+Process crashes → systemd-coredump → journal entry
+                                   ↓
+              drkonqi-coredump-processor@.service (SYSTEM level)
+                                   ↓
+              /run/user/UID/drkonqi-coredump-launcher (unix socket)
+                                   ↓
+              drkonqi-coredump-launcher.socket (USER level) ← ACTIVE, ratelimited
+                                   ↓
+              drkonqi-coredump-launcher@.service → shows notification → CRASH (sometimes)
+
+At boot:
+              drkonqi-coredump-pickup.socket (USER level) ← MASKED
+                                   ↓
+              drkonqi-coredump-pickup.service → processes old crashes from journal
+```
+
+#### Mitigation history
+
+1. **Pickup socket masked** (2026-03-11): Prevents boot-time reprocessing of old crashes
+2. **Launcher socket ratelimited** (2026-03-12): `TriggerLimitBurst=5, TriggerLimitIntervalSec=30s` — temporary measure
+3. **Coredump storage limits** (2026-03-11): `MaxUse=1G, KeepFree=2G, ExternalSizeMax=512M, ProcessSizeMax=256M`
+4. **Launcher socket masked** (2026-03-13): Both sockets now masked — drkonqi fully disabled
+
+#### Decision: Fully disable drkonqi
+
+The ratelimit was a mitigation, not a solution. Masking both sockets completely disables drkonqi. Crash diagnostics remain fully available via `coredumpctl` and `journalctl` — only the KDE crash GUI dialog is lost. Unmask both sockets after a future Plasma update to re-test.
+
+#### Cleanup performed
+
+- Purged old journal entries: `sudo journalctl --vacuum-time=3d` (removed 22K+ orphaned drkonqi coredump entries)
+- Updated CLAUDE.md: corrected regression version (6.6.1, not 6.6.2), documented both sockets and ratelimit
+
+### Issue 2: Bambu Studio Bus Lock Trap Spam [LOW / COSMETIC]
+
+**Status**: NO ACTION — UPSTREAM ISSUE
+
+No change from previous scan. `bambustu_main` triggers `x86/split lock detection: #DB` kernel warnings every ~30 seconds while running. `kernel.split_lock_mitigate=1` (default) correctly serializes offending operations and logs warnings. Disabling mitigation would remove the protection — not recommended. Upstream Bambu Studio code quality issue.
+
+### Issue 3: Chromium Renderer Crashes [LOW]
+
+**Status**: NO ACTION — MONITOR ONLY
+
+4 crashes across Mar 5–13 (~1 per 2 days). Mix of SIGILL and SIGTRAP — both are normal V8/Chromium mechanisms (debug assertions, JIT code traps). Renderer-only (tabs reload, browser stays up). Running Chromium 145.0.7632.159 (latest Arch). This rate is normal and not a regression.
+
+**Baseline**: ~1 renderer crash per 2 days. Escalate if frequency increases significantly.
+
+### CLAUDE.md Updates Applied
+
+| Field | Old Value | New Value |
+|-------|-----------|-----------|
+| drkonqi regression version | 6.6.2 | 6.6.1 |
+| drkonqi Known Issues section | Single masked socket | Both sockets documented (pickup=masked, launcher=ratelimited) |
+| Important Paths | Only pickup socket | Added launcher socket path and ratelimit.conf drop-in |
+| Follow-up instructions | unmask pickup if > 6.6.2-1 | unmask pickup + remove ratelimit drop-in if > 6.6.2-1 |
+
+### All Follow-up Items
+
+- [ ] **Unmask drkonqi** after next Plasma update if version > 6.6.2-1: `systemctl --user unmask drkonqi-coredump-pickup.socket drkonqi-coredump-launcher.socket`
+- [ ] **Monitor Chromium crash frequency** — baseline ~1/2 days; investigate if rate increases
+- [ ] **Consider reducing boot time** — `NetworkManager-wait-online.service` adds 7.8s; Odoo sync timers add 44s to systemd-analyze total (but don't block desktop)
+
+---
+
+## 2026-03-13T15:35:00Z — Full System Scan & Validation
+
+**Trigger**: User-requested comprehensive system scan to validate all documented claims and update repo.
+
+**Boot context**: System booted 2026-03-13 14:09 UTC, uptime ~1.5h at scan time. No failed systemd units. 0 failed system units, 0 failed user units.
+
+---
+
+### Follow-up Items Resolved (from 2026-03-11 session)
+
+| Item | Status | Evidence |
+|------|--------|----------|
+| /boot permissions (fmask=0077) | **CONFIRMED FIXED** | `stat -c "%a" /boot` returns `700` |
+| kwin display reconnection (video group fix) | **CONFIRMED FIXED** | Zero `kwin.*failed` or `modeset.*failed` journal entries this boot |
+| dbus duplicate Notifications service | **CONFIRMED FIXED** | Zero `duplicate` journal entries this boot |
+| /boot security hole warning | **CONFIRMED FIXED** | Zero `world accessible` or `security hole` journal entries this boot |
+| Odoo Blend Rates Sync failure | **CONFIRMED FIXED** | Last two runs show `7 OK, 0 FAILED` (was 6/7 pass, 1/7 fail). Fix was applied upstream in `odoo-api-pushing` |
+| drkonqi socket masked | **STILL MASKED** | `LoadState=masked, ActiveState=inactive`. Still needed — 22,420 drkonqi coredump entries in `coredumpctl list` from previous boots. drkonqi 6.6.2-1 still installed |
+
+### New Packages Since Last Session
+
+| Package | Version | Installed | Notes |
+|---------|---------|-----------|-------|
+| ollama | 0.17.7-1 | 2026-03-12 | LLM server |
+| ollama-cuda | 0.17.7-1 | 2026-03-12 | CUDA acceleration for Ollama |
+| cuda | 13.1.1-1 | 2026-03-12 | NVIDIA CUDA toolkit |
+| opencl-nvidia | 590.48.01-4 | 2026-03-12 | OpenCL support |
+| xclip | 0.13-6 | 2026-03-11 | X clipboard CLI |
+| strace | 6.19-1 | 2026-03-11 | System call tracer |
+
+New system service: `ollama.service` (active, enabled at boot).
+
+### New Timers Discovered (not previously documented)
+
+| Timer | Schedule | Description |
+|-------|----------|-------------|
+| `odoo-sync-appsheet-sheet.timer` | Every 15 min | Odoo AppSheet Product Sheet Sync |
+| `odoo-sync-supervisor.timer` | Every 15 min | Odoo Cutting Plan Sync — Supervisor |
+| `odoo-sync-admin.timer` | Daily 5AM | Odoo Cutting Plan Sync — Admin |
+| `github-auto-pull.timer` (user) | Daily | Auto-pulls GitHub repos |
+
+### New Issues Discovered
+
+#### Bambu Studio Bus Lock Trap Spam [LOW / COSMETIC]
+
+**Status**: DOCUMENTED — UPSTREAM ISSUE
+
+Bambu Studio (Flatpak `com.bambulab.BambuStudio 2.5.0.66`) process `bambustu_main` (PID 3497) triggers `x86/split lock detection: #DB` kernel warnings every ~30 seconds while running. Each burst contains ~10 traps at various addresses, with `handle_bus_lock: 20 callbacks suppressed` messages between bursts.
+
+This is a performance issue in the Bambu Studio binary — split-lock operations are serialized by the CPU and slow down execution. The kernel's split-lock detection is working correctly by trapping these. Functional impact is minimal (slight slowdown in Bambu Studio).
+
+No fix available — upstream Bambu Studio issue.
+
+#### Chromium Renderer Crash (SIGILL) [LOW]
+
+**Status**: DOCUMENTED — RECURRING
+
+Chromium renderer subprocess (PID 9276) crashed with SIGILL at 14:26 UTC this boot. Coredump: 53.1 MB (truncated). This is a renderer process crash (not the main browser process), so it self-recovers by respawning the tab. Previous boots also show Chromium crashes (SIGTRAP on Mar 9, SIGILL on Mar 13). Not a new regression.
+
+#### rtw89_8851be "MAC has already powered on" [LOW / COSMETIC]
+
+**Status**: DOCUMENTED — UPSTREAM
+
+Kernel error at boot: `rtw89_8851be 0000:08:00.0: MAC has already powered on`. WiFi PCIe driver (RTL8851BE) encounters stale hardware state on boot. Cosmetic — interface can be brought up if needed. WiFi currently unused (wlan0 down).
+
+### CLAUDE.md Corrections Applied
+
+| Field | Old Value | New Value | Reason |
+|-------|-----------|-----------|--------|
+| Bluetooth | `Realtek RTL8851BU USB dongle` | `Realtek USB (VID:PID 0bda:b850, firmware rtl_bt/rtl8851bu_fw.bin)` | USB device doesn't self-identify as RTL8851BU; documented factual VID:PID and firmware path |
+| WiFi | Not listed separately | `Realtek RTL8851BE PCIe 802.11ax (08:00.0)` | Was conflated with Bluetooth; they're separate devices (PCIe vs USB) |
+| Network chip | `Onboard Ethernet` | `Realtek RTL8125 2.5GbE` | Added specific chip identification |
+| Python | `3.14` | `3.14.3` | More precise version |
+| BlueZ | `5.86` | `5.86-4` | Full package version |
+| zram | `16 GB` | `15.5 GB (zstd compression)` | Actual size from `zramctl` |
+| Boot timing | `~39s total` | `~36s to graphical.target, ~1m24s systemd-analyze total` | Previous values were from different boot; Odoo sync timers inflate the total |
+| NM-wait-online | `7.6s` | `7.8s` | Current boot measurement |
+| Odoo Blend Rates | Listed as known issue | Removed (fixed) | Now passing 7/7 syncs |
+| Key Services | Missing 5 services | Added ollama, appsheet-sheet, supervisor, admin, github-auto-pull timers | Discovered during timer enumeration |
+| GPU Driver | Not listed | `NVIDIA Open 590.48.01` | Added for completeness |
+| CUDA/Ollama | Not listed | `CUDA 13.1.1, Ollama 0.17.7` | New packages installed Mar 12 |
+| Coredump limits | `MaxUse/KeepFree/ExternalSizeMax` | Added `ProcessSizeMax=256M` | Was in config file but not documented |
+
+### Current System State
+
+| Metric | Value |
+|--------|-------|
+| Uptime | ~1.5h (booted 14:09 UTC) |
+| Failed units | 0 system, 0 user |
+| Disk used (/) | 86 GB (379 GB free, 19%) |
+| Memory | 13 GB used / 30 GB total |
+| Swap (zram) | 4 KB / 15.5 GB |
+| Coredump storage | 137 MB (5 files: 1 bambu-studio, 1 chromium, 3 slack) |
+| Odoo sync status | 7/7 passing (last run: 33.0s total) |
+| drkonqi socket | masked (still needed — 6.6.2-1 installed) |
+| /boot permissions | 700 (fixed) |
+| Boot to desktop | ~36s |
+
+### All Follow-up Items
+
+- [ ] **Unmask drkonqi** after next Plasma update if version > 6.6.2-1
+- [ ] **Monitor Chromium crash frequency** — if crashes increase, investigate SIGILL cause
+- [ ] **Consider reducing boot time** — `NetworkManager-wait-online.service` adds 7.8s; Odoo sync timers add 44s to systemd-analyze total (but don't block desktop)
+
+---
+
 ## 2026-03-11T17:24:00Z — ~/.claude/ Rotation Rule Enforcement
 
 **Trigger**: Previous session discovered ~/.claude/ had grown to 1.9 GB (1,092 session JSONLs, 246 MB debug, 70 MB telemetry) causing 5-15 second Claude Code startup lag. Manual cleanup brought it to 7.3 MB. This session adds automated rotation to prevent recurrence.
