@@ -2,6 +2,79 @@
 
 ---
 
+## 2026-03-16T20:15:00Z — Fix Deep Sleep (S3) Causing Unrecoverable Hang
+
+**Trigger**: Computer falls into deep sleep (S3) and cannot wake — requires hard power cycle. Previous fix (`/etc/systemd/sleep.conf.d/10-s2idle.conf` with `MemorySleepMode=s2idle`) was insufficient.
+
+**Root cause**: The systemd sleep drop-in only controls what systemd requests from the kernel, but the kernel's own default was still `deep` (S3). Confirmed by `cat /sys/power/mem_sleep` showing `s2idle [deep]` — brackets indicate the kernel-selected mode. On AMD X870 + NVIDIA RTX 5060, S3 deep sleep is unreliable — the GPU fails to reinitialize on wake, causing a black screen / hard hang.
+
+**Why the original fix didn't work**: `MemorySleepMode=s2idle` in `sleep.conf.d` tells systemd to write `s2idle` to `/sys/power/mem_sleep` at suspend time. But the kernel parameter `mem_sleep_default` controls the **default** selection, and without it the ACPI tables on this AMD board select `deep`. If anything triggers suspend outside of systemd (e.g., ACPI lid/button event, KDE power management), the kernel's own default (`deep`) is used instead of s2idle.
+
+**Fix applied**: Added `mem_sleep_default=s2idle` to the kernel command line in the systemd-boot loader entry:
+
+```
+# /boot/loader/entries/2026-02-19_21-34-48_linux.conf
+options root=PARTUUID=... zswap.enabled=0 rootflags=subvol=@ rw rootfstype=btrfs pcie_aspm=off mem_sleep_default=s2idle
+```
+
+**Bonus fix**: AMD microcode (`amd-ucode.img`) was present on disk but **not loaded** — the initrd line was missing it. Added as the first initrd:
+
+```
+initrd  /amd-ucode.img
+initrd  /initramfs-linux.img
+```
+
+**Verification required after reboot**:
+
+| Check | Expected |
+|-------|----------|
+| `cat /sys/power/mem_sleep` | `[s2idle] deep` (s2idle in brackets = selected) |
+| `cat /proc/cmdline` | Contains `mem_sleep_default=s2idle` |
+| `dmesg \| grep -i microcode` | Shows AMD microcode loaded |
+| Suspend/wake cycle | System wakes normally from sleep |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `/boot/loader/entries/2026-02-19_21-34-48_linux.conf` | Added `mem_sleep_default=s2idle` to options, added `initrd /amd-ucode.img` |
+| `/etc/systemd/sleep.conf.d/10-s2idle.conf` | Unchanged (still valid as defense-in-depth) |
+
+---
+
+## 2026-03-16T20:00:00Z — Personal Tailscale Instance Removed
+
+**Trigger**: Personal Tailscale instance (`markntrotter@`, `tailscaled-personal.service`) did not work reliably despite the dual-instance coexistence fixes applied earlier this session.
+
+**Decision**: Stop, disable, and remove the personal Tailscale instance entirely.
+
+**Actions performed**:
+
+1. **Stopped** the service: `sudo systemctl stop tailscaled-personal.service`
+2. **Disabled** the service: `sudo systemctl disable tailscaled-personal.service`
+3. **Removed** the service unit and state:
+   - `/etc/systemd/system/tailscaled-personal.service` — removed
+   - `/var/lib/tailscale-personal/` — state directory removed
+   - `sudo systemctl daemon-reload`
+
+**Result**: Only the CEO's Tailscale instance (`philip.a.greene@`, `tailscaled.service`, `tailscale0`) remains. No personal tailnet on this machine.
+
+**Network interfaces after removal**:
+
+| Interface | Address | Notes |
+|-----------|---------|-------|
+| tailscale0 | 100.120.20.39/32 | CEO's tailnet — unchanged |
+| tailscale1 | — | **Removed** (was Mark's personal) |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `/etc/systemd/system/tailscaled-personal.service` | **Removed** |
+| `/var/lib/tailscale-personal/` | **Removed** (state directory) |
+
+---
+
 ## 2026-03-16T19:35:00Z — Dual Tailscale: Fix Personal Instance Coexistence with CEO's Tailnet
 
 **Trigger**: Enabling Mark's personal Tailscale instance killed all internet connectivity. Two Tailscale instances fighting over DNS (`/etc/resolv.conf`), iptables/netfilter rules, and routing policy tables.

@@ -69,7 +69,6 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | enp7s0 | 192.168.1.158/24 | Primary LAN |
 | wg0 | 10.0.0.1/24 | WireGuard VPN mesh |
 | tailscale0 | 100.120.20.39/32 | CEO's tailnet (`philip.a.greene@`) — DO NOT TOUCH |
-| tailscale1 | 100.70.191.17/32 | Mark's personal tailnet (`markntrotter@`) — passive (no DNS, no netfilter) |
 | docker0 | 172.17.0.1/16 | Docker bridge |
 | wlan0 | down | WiFi adapter present but unused |
 
@@ -83,7 +82,6 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | `odoo-nabis-order-sync.timer` | Timer | Every 60 min | Nabis order sync to Odoo |
 | `odoo-sync-admin.timer` | Timer | Daily 5AM | Odoo Cutting Plan Sync — Admin |
 | `tailscaled.service` | Startup | Boot | CEO's Tailscale (`philip.a.greene@`, tailscale0, port 41641) — DO NOT MODIFY |
-| `tailscaled-personal.service` | Startup | Boot | Mark's Tailscale (`markntrotter@`, tailscale1, port 41643). Must `up` with `--accept-dns=false --netfilter-mode=off` |
 | `ollama.service` | Startup | Boot | Ollama LLM server (CUDA-accelerated) |
 | `wg-quick@wg0.service` | Startup | Boot | WireGuard VPN |
 | `docker.service` | Startup | Boot | Container runtime, depends on network-online |

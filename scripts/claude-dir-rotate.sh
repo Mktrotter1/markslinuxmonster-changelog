@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # claude-dir-rotate.sh — Enforce rotation rule on ~/.claude/ directory
-# Rule: Rotate by size (10 MB) or time (7 days), never silently discard
+# Rule: Rotate by size (10 MB) or time, never silently discard
 #
 # Phases:
-#   1. Time-based cleanup: delete session/ephemeral files older than 7 days
-#   2. history.jsonl truncation: if over 10 MB, keep last 1000 lines
-#   3. Hard cap: if ~/.claude/ still exceeds 500 MB, delete oldest session JSONLs
-#   4. Summary log: JSONL audit entry with totals
+#   1. Time-based cleanup: debug/file-history/snapshots (1 day), ephemeral (3 days), session data (7 days)
+#   2. Empty file cleanup: 2-byte todo files, empty dirs
+#   3. history.jsonl truncation: if over 10 MB, keep last 1000 lines
+#   4. Hard cap: if ~/.claude/ still exceeds 500 MB, delete oldest session JSONLs
+#   5. Summary log: JSONL audit entry with totals
 #
 # Protected (NEVER touched):
 #   settings.json, settings.local.json, .credentials.json
@@ -21,10 +22,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/../logs"
 LOG_FILE="${LOG_DIR}/claude-dir-rotate.jsonl"
 DRY_RUN=false
-MAX_AGE_DAYS=7
+MAX_AGE_DAYS=7          # Session data (project JSONLs, UUID dirs)
+SHORT_AGE_DAYS=1        # High-churn dirs (debug, file-history, shell-snapshots)
+MID_AGE_DAYS=3          # Ephemeral (todos, plans, tasks, backups, paste-cache)
 HARD_CAP_MB=500
 HISTORY_MAX_MB=10
 HISTORY_KEEP_LINES=1000
+MAX_BACKUPS=5
 
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=true
@@ -57,18 +61,66 @@ delete_file() {
     fi
 }
 
-# ─── Phase 1: Time-based cleanup (7-day TTL) ───────────────────────────
+# ─── Phase 1: Tiered time-based cleanup ───────────────────────────────
 
-echo "=== Phase 1: Time-based cleanup (files older than ${MAX_AGE_DAYS} days) ==="
+echo "=== Phase 1a: High-churn dirs (${SHORT_AGE_DAYS}-day TTL) ==="
 
-# 1a. Session JSONL files under projects/ (NOT memory/ dirs)
+# Debug logs — accumulate fast, rarely referenced after session
+while IFS= read -r -d '' file; do
+    delete_file "${file}"
+done < <(find "${CLAUDE_DIR}/debug" -type f -mtime +${SHORT_AGE_DAYS} -print0 2>/dev/null)
+
+# File-history session dirs
+while IFS= read -r -d '' dir; do
+    if ${DRY_RUN}; then
+        local_size=$(du -sb "${dir}" | awk '{print $1}')
+        echo "[DRY RUN] Would delete dir: ${dir} (${local_size} bytes)"
+    else
+        local_size=$(du -sb "${dir}" | awk '{print $1}')
+        rm -rf "${dir}"
+        BYTES_RECLAIMED=$((BYTES_RECLAIMED + local_size))
+    fi
+done < <(find "${CLAUDE_DIR}/file-history" -mindepth 1 -maxdepth 1 -type d -mtime +${SHORT_AGE_DAYS} -print0 2>/dev/null)
+
+# Shell snapshots
+while IFS= read -r -d '' file; do
+    delete_file "${file}"
+done < <(find "${CLAUDE_DIR}/shell-snapshots" -type f -mtime +${SHORT_AGE_DAYS} -print0 2>/dev/null)
+
+echo "=== Phase 1b: Ephemeral dirs (${MID_AGE_DAYS}-day TTL) ==="
+
+# Todos, plans, tasks, paste-cache, session-env
+for ephemeral_dir in todos plans tasks paste-cache session-env; do
+    if [[ -d "${CLAUDE_DIR}/${ephemeral_dir}" ]]; then
+        while IFS= read -r -d '' file; do
+            delete_file "${file}"
+        done < <(find "${CLAUDE_DIR}/${ephemeral_dir}" -type f -mtime +${MID_AGE_DAYS} -print0 2>/dev/null)
+    fi
+done
+
+# Task subdirectories (contain JSON files in UUID dirs)
+if [[ -d "${CLAUDE_DIR}/tasks" ]]; then
+    while IFS= read -r -d '' dir; do
+        if ${DRY_RUN}; then
+            local_size=$(du -sb "${dir}" | awk '{print $1}')
+            echo "[DRY RUN] Would delete dir: ${dir} (${local_size} bytes)"
+        else
+            local_size=$(du -sb "${dir}" | awk '{print $1}')
+            rm -rf "${dir}"
+            BYTES_RECLAIMED=$((BYTES_RECLAIMED + local_size))
+        fi
+    done < <(find "${CLAUDE_DIR}/tasks" -mindepth 1 -maxdepth 1 -type d -mtime +${MID_AGE_DAYS} -print0 2>/dev/null)
+fi
+
+echo "=== Phase 1c: Session data (${MAX_AGE_DAYS}-day TTL) ==="
+
+# Session JSONL files under projects/ (NOT memory/ dirs)
 while IFS= read -r -d '' file; do
     delete_file "${file}"
 done < <(find "${CLAUDE_DIR}/projects" -name '*.jsonl' -mtime +${MAX_AGE_DAYS} -not -path '*/memory/*' -print0 2>/dev/null)
 
-# 1b. Session UUID directories under projects/ (subagent data, NOT memory/)
+# Session UUID directories under projects/ (subagent data, NOT memory/)
 while IFS= read -r -d '' dir; do
-    # Only delete UUID-named dirs (36-char pattern with hyphens)
     dirname=$(basename "${dir}")
     if [[ "${dirname}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
         if ${DRY_RUN}; then
@@ -82,38 +134,35 @@ while IFS= read -r -d '' dir; do
     fi
 done < <(find "${CLAUDE_DIR}/projects" -mindepth 2 -maxdepth 2 -type d -not -name 'memory' -mtime +${MAX_AGE_DAYS} -print0 2>/dev/null)
 
-# 1c. Debug .txt files older than 7 days
-while IFS= read -r -d '' file; do
-    delete_file "${file}"
-done < <(find "${CLAUDE_DIR}/debug" -name '*.txt' -mtime +${MAX_AGE_DAYS} -print0 2>/dev/null)
-
-# 1d. Telemetry files older than 7 days
+# Telemetry files
 while IFS= read -r -d '' file; do
     delete_file "${file}"
 done < <(find "${CLAUDE_DIR}/telemetry" -type f -mtime +${MAX_AGE_DAYS} -print0 2>/dev/null)
 
-# 1e. File-history session dirs older than 7 days
-while IFS= read -r -d '' dir; do
-    if ${DRY_RUN}; then
-        local_size=$(du -sb "${dir}" | awk '{print $1}')
-        echo "[DRY RUN] Would delete dir: ${dir} (${local_size} bytes)"
-    else
-        local_size=$(du -sb "${dir}" | awk '{print $1}')
-        rm -rf "${dir}"
-        BYTES_RECLAIMED=$((BYTES_RECLAIMED + local_size))
-    fi
-done < <(find "${CLAUDE_DIR}/file-history" -mindepth 1 -maxdepth 1 -type d -mtime +${MAX_AGE_DAYS} -print0 2>/dev/null)
+# ─── Phase 2: Empty file & backup cleanup ─────────────────────────────
 
-# 1f. Ephemeral dirs: todos, plans, tasks, backups, paste-cache, shell-snapshots, session-env
-for ephemeral_dir in todos plans tasks backups paste-cache shell-snapshots session-env; do
-    if [[ -d "${CLAUDE_DIR}/${ephemeral_dir}" ]]; then
-        while IFS= read -r -d '' file; do
-            delete_file "${file}"
-        done < <(find "${CLAUDE_DIR}/${ephemeral_dir}" -type f -mtime +${MAX_AGE_DAYS} -print0 2>/dev/null)
-    fi
-done
+echo "=== Phase 2: Empty file & backup cleanup ==="
 
-# 1g. Clean up resulting empty directories (exclude protected top-level dirs)
+# Remove 2-byte empty todo files (just "[]")
+count=0
+while IFS= read -r -d '' file; do
+    delete_file "${file}"
+    count=$((count + 1))
+done < <(find "${CLAUDE_DIR}/todos" -type f -size 2c -print0 2>/dev/null)
+[[ $count -gt 0 ]] && echo "Removed ${count} empty todo files"
+
+# Keep only N most recent backups
+if [[ -d "${CLAUDE_DIR}/backups" ]]; then
+    backup_count=$(find "${CLAUDE_DIR}/backups" -type f | wc -l)
+    if [[ ${backup_count} -gt ${MAX_BACKUPS} ]]; then
+        find "${CLAUDE_DIR}/backups" -type f -printf '%T@ %p\n' | sort -n | head -n $((backup_count - MAX_BACKUPS)) | cut -d' ' -f2- | while read -r old_backup; do
+            delete_file "${old_backup}"
+        done
+        echo "Trimmed backups to ${MAX_BACKUPS} most recent"
+    fi
+fi
+
+# Clean up empty directories (exclude protected top-level dirs)
 find "${CLAUDE_DIR}" -mindepth 2 -type d -empty \
     -not -path '*/memory*' \
     -not -path '*/skills/*' \
@@ -122,11 +171,11 @@ find "${CLAUDE_DIR}" -mindepth 2 -type d -empty \
     -not -path '*/commands/*' \
     -delete 2>/dev/null || true
 
-echo "Phase 1 complete."
+echo "Phase 2 complete."
 
-# ─── Phase 2: history.jsonl truncation ──────────────────────────────────
+# ─── Phase 3: history.jsonl truncation ──────────────────────────────────
 
-echo "=== Phase 2: history.jsonl truncation ==="
+echo "=== Phase 3: history.jsonl truncation ==="
 
 HISTORY_FILE="${CLAUDE_DIR}/history.jsonl"
 if [[ -f "${HISTORY_FILE}" ]]; then
@@ -151,9 +200,9 @@ else
     echo "No history.jsonl found, skipping."
 fi
 
-# ─── Phase 3: Hard cap (500 MB) ────────────────────────────────────────
+# ─── Phase 4: Hard cap (500 MB) ────────────────────────────────────────
 
-echo "=== Phase 3: Hard cap check (${HARD_CAP_MB} MB) ==="
+echo "=== Phase 4: Hard cap check (${HARD_CAP_MB} MB) ==="
 
 current_size_kb=$(du -sk "${CLAUDE_DIR}" | awk '{print $1}')
 hard_cap_kb=$((HARD_CAP_MB * 1024))
@@ -181,7 +230,7 @@ else
     echo "Directory is ${current_size_kb} KB (under ${HARD_CAP_MB} MB cap), no action needed."
 fi
 
-# ─── Phase 4: Summary log ──────────────────────────────────────────────
+# ─── Phase 5: Summary log ──────────────────────────────────────────────
 
 size_after=$(du -sb "${CLAUDE_DIR}" | awk '{print $1}')
 

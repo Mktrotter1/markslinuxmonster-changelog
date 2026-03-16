@@ -2,8 +2,8 @@
 Description=Daily rotation of Claude Code ~/.claude/ directory
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=300
+OnCalendar=*-*-* 23:55:00
+RandomizedDelaySec=0
 Persistent=true
 
 [Install]
