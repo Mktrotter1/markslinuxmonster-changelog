@@ -2,6 +2,96 @@
 
 ---
 
+## 2026-03-16T19:35:00Z — Dual Tailscale: Fix Personal Instance Coexistence with CEO's Tailnet
+
+**Trigger**: Enabling Mark's personal Tailscale instance killed all internet connectivity. Two Tailscale instances fighting over DNS (`/etc/resolv.conf`), iptables/netfilter rules, and routing policy tables.
+
+**Context**: Machine runs two tailnets — CEO's (`philip.a.greene@`, `tailscaled.service`) which cannot be modified, and Mark's personal (`markntrotter@`, `tailscaled-personal.service`). A third instance (`tailscaled-mark.service`) also existed but was redundant.
+
+---
+
+### Issue 1: Personal Tailscale Breaks Internet [HIGH → FIXED]
+
+**Status**: FIXED
+
+**Symptom**: Activating the personal Tailscale instance caused total loss of internet connectivity. DNS resolution failed, routing broke.
+
+**Root cause (three problems)**:
+
+| Problem | Detail |
+|---------|--------|
+| **DNS hijack** | Both instances defaulted to `--accept-dns=true`, fighting over `/etc/resolv.conf`. Whichever wrote last pointed all DNS to its own MagicDNS (`100.100.100.100`), which may not forward non-tailnet queries properly. |
+| **Netfilter stomping** | Both instances defaulted to `--netfilter-mode=on`, each installing their own iptables/nftables chains and policy routing rules (table 52, fwmark rules 5210-5270). On restart, one would blow away the other's rules. |
+| **Port collision** | `tailscaled-personal.service` and the now-removed `tailscaled-mark.service` both used `--port=41642`. Only one could bind. |
+
+**Note**: This is NOT an officially supported Tailscale configuration. Running multiple `tailscaled` instances on one host is a community workaround (GitHub issue #183). Tailscale's internal codename for proper support is "personas" — no timeline. The key insight from Tailscale docs and community guides: secondary instances **must** use `--netfilter-mode=off` (at `tailscale up` time) and `--accept-dns=false` to avoid stomping the primary.
+
+**Fixes applied**:
+
+1. **Removed redundant `tailscaled-mark.service`**:
+   ```bash
+   # Service was already stopped/not-found by systemd
+   sudo rm -rf /var/lib/tailscale-mark/   # state dir cleanup
+   sudo systemctl daemon-reload
+   ```
+
+2. **Fixed port collision** in `/etc/systemd/system/tailscaled-personal.service`:
+   ```
+   # Before: --port=41642 (same as the removed mark instance, near CEO's 41641)
+   # After:  --port=41643 (unique, no collision)
+   ```
+
+3. **Brought up personal instance with passive flags**:
+   ```bash
+   sudo tailscale --socket=/run/tailscale-personal/tailscaled.sock up \
+     --accept-dns=false \
+     --netfilter-mode=off
+   ```
+   - `--accept-dns=false` → personal instance does not touch `/etc/resolv.conf`
+   - `--netfilter-mode=off` → personal instance does not touch iptables or routing tables
+
+**Result**: Both tailnets running simultaneously, internet unaffected:
+
+| Instance | Socket | Tun | Port | DNS | Netfilter | Status |
+|----------|--------|-----|------|-----|-----------|--------|
+| CEO (`philip.a.greene@`) | `/run/tailscale/tailscaled.sock` | `tailscale0` | 41641 | owns DNS | owns rules | Active |
+| Personal (`markntrotter@`) | `/run/tailscale-personal/tailscaled.sock` | `tailscale1` | 41643 | passive | passive | Active |
+
+**Post-fix verification**:
+
+| Check | Result |
+|-------|--------|
+| CEO's Tailscale status | All 9 nodes visible, direct connection to meridian (18ms) |
+| Personal Tailscale status | 2 nodes visible (markslinuxmonster, marks-z-fold6) |
+| `/etc/resolv.conf` | Local routers (192.168.1.1, 192.168.100.1) — not MagicDNS |
+| Default route | `192.168.1.1 via enp7s0` — normal ethernet |
+| `ip rule list` | Unchanged from pre-fix state |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `/etc/systemd/system/tailscaled-personal.service` | `--port=41642` → `--port=41643` |
+| `/etc/systemd/system/tailscaled-mark.service` | **Removed** (redundant instance) |
+| `/var/lib/tailscale-mark/` | **Removed** (state dir for removed instance) |
+
+### Important: Future `tailscale up` Commands
+
+When restarting the personal instance, **always** include the passive flags:
+```bash
+sudo tailscale --socket=/run/tailscale-personal/tailscaled.sock up \
+  --accept-dns=false \
+  --netfilter-mode=off
+```
+
+Without these flags, it will revert to default behavior and break connectivity again. These are `tailscale up` flags (not daemon flags) and must be passed each time the node is brought up.
+
+### Limitation
+
+With `--netfilter-mode=off`, the personal instance has no automatic firewall rules. Exit node support, MSS clamping, and stateful filtering for that tailnet are not available. Direct node-to-node connectivity (via DERP or direct) still works.
+
+---
+
 ## 2026-03-16T18:48:00Z — Chromium Hang: KWallet D-Bus Deadlock
 
 **Trigger**: Chromium pages hanging indefinitely (infinite load spinner). All other network tools working fine.
