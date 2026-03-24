@@ -82,6 +82,7 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | `odoo-nabis-order-sync.timer` | Timer | Every 60 min | Nabis order sync to Odoo |
 | `odoo-sync-admin.timer` | Timer | Daily 5AM | Odoo Cutting Plan Sync — Admin |
 | `tailscaled.service` | Startup | Boot | CEO's Tailscale (`philip.a.greene@`, tailscale0, port 41641) — DO NOT MODIFY |
+| `nvidia-persistenced.service` | Startup | Boot | NVIDIA persistence daemon — prevents GPU idle power state crashes (Xid 62) |
 | `ollama.service` | Startup | Boot | Ollama LLM server (CUDA-accelerated) |
 | `wg-quick@wg0.service` | Startup | Boot | WireGuard VPN |
 | `docker.service` | Startup | Boot | Container runtime, depends on network-online |
@@ -113,8 +114,15 @@ Top blame: odoo-sync-sheets-all.service 44s, odoo-nabis-order-sync 8.8s, NM-wait
 | `~/.config/systemd/user/drkonqi-coredump-launcher.socket.d/ratelimit.conf` | Ratelimit drop-in (inert while socket masked): TriggerLimitBurst=5, TriggerLimitIntervalSec=30s |
 | `scripts/claude-dir-rotate.sh` | ~/.claude/ rotation script (7-day TTL, 500 MB cap) |
 | `/etc/systemd/coredump.conf.d/limits.conf` | Coredump limits: MaxUse=1G, KeepFree=2G, ExternalSizeMax=512M, ProcessSizeMax=256M |
+| `/etc/modprobe.d/nvidia.conf` | NVIDIA VRAM preservation: `NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFilePath=/var/tmp` |
+| `/etc/systemd/sleep.conf.d/10-s2idle.conf` | All sleep modes disabled (`AllowSuspend=no`, etc.) — DO NOT RE-ENABLE |
 
 ## Known Issues (Persistent)
+
+### GPU Stability — Mitigated (2026-03-20)
+
+- **NVIDIA RTX 5060 Xid 62/154 GPU lockups**: GSP firmware RPC timeout causes GPU to lock, display becomes unrecoverable. Mitigated by enabling `nvidia-persistenced` (keeps GPU in stable managed state), `NVreg_PreserveVideoMemoryAllocations=1`, and NVIDIA suspend/hibernate services. Sleep remains fully disabled. If Xid 62 recurs, file NVIDIA bug for RTX 5060 (GB206 Blackwell) on kernel 6.19 / driver 590.48.
+- **Sleep fully disabled**: `/etc/systemd/sleep.conf.d/10-s2idle.conf` blocks all suspend/hibernate. This is intentional — DO NOT re-enable. The AMD X870 + RTX 5060 combination does not reliably resume from any sleep state.
 
 ### Cosmetic / Won't Fix
 

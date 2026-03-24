@@ -2,6 +2,271 @@
 
 ---
 
+## 2026-03-24T15:00:00-07:00 — System Health Fixes (btrfs balance, coredump cleanup, scrub timer)
+
+**Trigger**: Post-purge health audit revealed fragmented btrfs allocation, coredump accumulation, stale pacman artifacts, orphan packages, and no scheduled btrfs scrub.
+
+### Fixes applied
+
+#### 1. Btrfs balance — reclaimed 41 GB of allocated-but-empty block groups
+
+After the 46 GB disk purge, btrfs still had 128 GB allocated for data with only 83 GB used (65% utilization). Ran `btrfs balance start -dusage=75 /` to compact.
+
+| | Before | After |
+|---|---|---|
+| Data allocated | 128.01 GiB | 87.01 GiB |
+| Data utilization | 64.79% | 94.85% |
+| Device unallocated | 330.74 GiB | 371.74 GiB |
+
+#### 2. Coredump cleanup — 362 MB → 2.6 MB
+
+Removed recurring crash dumps from known issues (not useful for debugging):
+
+| Source | Dumps removed | Size freed | Known issue |
+|--------|--------------|------------|-------------|
+| Slack (Flatpak 4.46.99) | 7 | ~53 MB | Electron/Chromium SIGTRAP in Flatpak sandbox |
+| xdg-desktop-portal-kde | 8 | ~8 MB | QMessageLogger fatal — KWallet dependency (kwallet 6.24.0-1) |
+| ksecretd | 1 | ~600 KB | Same KWallet crash chain |
+| Bambu Studio | 2 | ~132 MB | Known split-lock / crash issue |
+| Chromium renderer | 2 | ~66 MB | Recurring SIGILL/SIGTRAP in renderer subprocess |
+| Cpp2IL | 1 | ~3 MB | One-off from sleepdata-shell RE session |
+| React Native Debugger | 2 | ~330 KB | One-off from mobile-dev |
+
+Kept: Xorg core (2 MB, Xid 62 GPU lockup evidence) and tmux core (579 KB, one-off).
+
+#### 3. Stale pacman download directories removed
+
+10 empty `download-*` temp dirs in `/var/cache/pacman/pkg/` from interrupted `pacman -Syu` runs (oldest from 2026-03-02). Removed with `rm -rf`.
+
+#### 4. Orphan packages removed
+
+```
+sudo pacman -Rns python-build python-installer python-setuptools-scm
+```
+
+Also pulled in `python-pyproject-hooks` as a dependency. Total: 4 packages, 1.15 MiB. These were leftover build dependencies with no reverse deps.
+
+#### 5. Monthly btrfs scrub timer enabled
+
+```
+sudo systemctl enable --now btrfs-scrub@-.timer
+```
+
+Created symlink `/etc/systemd/system/timers.target.wants/btrfs-scrub@-.timer`. Scrub will run monthly on the root filesystem to detect silent bitrot. Previous scrub had run once with no errors but was not scheduled.
+
+### Health status post-fixes
+
+| Check | Status |
+|-------|--------|
+| NVMe SMART | 0% wear, 0 errors, 40°C, 100% spare |
+| Btrfs device errors | All zeros |
+| Btrfs scrub | Clean (no errors), now scheduled monthly |
+| Btrfs allocation | 95% data utilization (was 65%) |
+| Failed systemd units | 0 system, 0 user |
+| Memory | 18 GB available / 30 GB, swap untouched |
+| Coredumps | 2.6 MB (was 362 MB) |
+| Disk | 87 GB used / 465 GB (19%) |
+
+### Monitored (no action needed)
+
+- **Odoo appsheet sync**: Intermittent failures at 10:00 and 12:45 today, succeeded at 14:45. Transient.
+- **Slack Flatpak crashes**: ~every 2-6 hours. Upstream Electron issue. Coredumps will re-accumulate — consider periodic `rm /var/lib/systemd/coredump/core.slack.*`.
+- **k3s-agent**: Running and enabled — confirmed intentional.
+- **dbus Notifications duplicate**: Cosmetic log noise from duplicate service file, no impact.
+
+---
+
+## 2026-03-24T00:00:00-07:00 — Disk Bloat Purge (~46 GB reclaimed from Mktrotter1)
+
+**Trigger**: Routine disk bloat audit. `/home/mark/repos/Mktrotter1/` was 48 GB; the actual source code across all repos totaled only ~2.4 GB.
+
+**Disk state before**: 111 GB used / 465 GB total (24%)
+**Disk state after**: 87 GB used / 465 GB total (19%)
+
+### What was removed
+
+#### Pokemon Sleep data — 23.1 GB (no longer needed, skills already captured in claude-skills)
+
+| Path | Size | Contents |
+|------|------|----------|
+| `chromium-playrite-scraper/data/scraper.db` | 11 GB | Main scraper SQLite database |
+| `chromium-playrite-scraper/data/raw/` | 5.5 GB | 111 raw capture JSONL files |
+| `chromium-playrite-scraper/data/scraper_remote_autosync.db` (+shm/wal) | 1.4 GB | Sync copy of scraper DB |
+| `chromium-playrite-scraper/logs/` | 329 MB | Scraper logs + exploration screenshots |
+| `sleepdata-shell/data/` | 3.3 GB | Raw traffic captures, sleepdata.db, Frida captures |
+| `sleepdata-shell/tools/apk/` | 1.6 GB | Decompiled APKs, patched APKs, native libs |
+
+#### Build artifacts — 13.9 GB (regenerable)
+
+| Path | Size | Regenerate with |
+|------|------|-----------------|
+| `hands_off_my_stuff/client/target/` | 6.5 GB | `cargo build` |
+| `mobile-dev/android/app/build/` | 4.4 GB | Android Gradle build |
+| `myfireremote/app/build/` | 3.0 GB | Flutter build |
+
+#### node_modules — 6.9 GB (regenerable)
+
+| Path | Size | Regenerate with |
+|------|------|-----------------|
+| `mobile-dev/node_modules/` | 6.6 GB | `npm install` |
+| `marks-music-solutions/web/node_modules/` | 147 MB | `npm install` |
+| `hands_off_my_stuff/dashboard/node_modules/` | 113 MB | `npm install` |
+| `hands_off_my_stuff/e2e/node_modules/` | 14 MB | `npm install` |
+
+#### Python .venvs — 2.3 GB (regenerable from requirements.txt)
+
+| Repo | Size |
+|------|------|
+| `chromium-playrite-scraper` | 779 MB |
+| `bee-swarm-macro` | 492 MB |
+| `odoo-api-pushing` | 390 MB |
+| `home-assistant-device-setups` | 186 MB |
+| `github-watcher` | 169 MB |
+| `sleepdata-shell` | 164 MB |
+| `git-demo` | 149 MB |
+| `periodically-periodic-table` | 17 MB |
+
+#### Misc artifacts — 36 MB
+
+| Path | Size |
+|------|------|
+| `odoo-api-pushing/screenshots/` | 18 MB (28 files) |
+| `odoo-api-pushing/debug_screenshots/` | 16 MB (44 files) |
+| `odoo-api-pushing/__pycache__/` | 2.1 MB |
+
+### What was NOT touched
+
+- All source code, configs, CLAUDE.md files, tests, docs
+- Git history (all repos intact)
+- Lock files (package-lock.json, Cargo.lock, requirements.txt)
+- The `.git/` directories themselves
+
+### Follow-up
+
+- When resuming work on any cleaned repo, run the appropriate dependency install command
+- All Pokemon Sleep data directories are gitignored — no git status impact
+- Build artifacts are gitignored — no git status impact
+
+---
+
+## 2026-03-20T14:35:00Z — Fix NVIDIA RTX 5060 GPU Lockups (Xid 62/154)
+
+**Trigger**: System becomes unresponsive every ~24h, requiring hard reboot. User initially attributed to "deep sleep" but sleep was already fully disabled.
+
+**Root cause**: NVIDIA RTX 5060 (GB206, Blackwell) with driver 590.48.01 suffers Xid 62 (GSP firmware RPC timeout) and Xid 154 (GPU reset required) crashes during normal operation. The GPU's GSP firmware communication hangs, the RC watchdog detects a locked GPU, and nvidia-modeset can no longer configure the dual-monitor setup — resulting in a frozen/black display.
+
+**Crash chain from boot -1 (2026-03-19 → 2026-03-20)**:
+
+| Time | Event |
+|------|-------|
+| 10:16:01 | `Xid 62` — GSP firmware RPC failure (`_kgspRpcRecvPoll` Call Trace) |
+| 10:16:01 | `Xid 154` — GPU recovery action changed to "GPU Reset Required" |
+| 13:48–13:50 | `RC watchdog: GPU is probably locked!` repeating every 8s |
+| 13:50:13 | `nvidia-modeset: ERROR: display configuration not supported on this GPU` |
+| 13:50:31 | User forced reboot (SDDM stopped, system shutdown) |
+
+**Contributing factors**:
+
+| Factor | State Before | Problem |
+|--------|-------------|---------|
+| NVIDIA Persistence Mode | Disabled | GPU enters aggressive idle power states, triggering GSP firmware instability |
+| nvidia-suspend/hibernate services | Disabled | GPU power state transitions not properly managed |
+| PreserveVideoMemoryAllocations | Not set | No modprobe.d config existed for NVIDIA |
+
+**Fixes applied**:
+
+1. **Created `/etc/modprobe.d/nvidia.conf`**:
+   ```
+   options nvidia NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFilePath=/var/tmp
+   ```
+
+2. **Enabled NVIDIA power management services**:
+   ```bash
+   sudo systemctl enable nvidia-suspend nvidia-resume nvidia-hibernate
+   ```
+
+3. **Enabled NVIDIA persistence daemon**:
+   ```bash
+   sudo systemctl enable --now nvidia-persistenced
+   ```
+   Persistence Mode now active — keeps the GPU driver loaded and in a stable managed state, preventing idle power state transitions that trigger Xid 62.
+
+**Note**: Sleep remains fully disabled per user preference (`/etc/systemd/sleep.conf.d/10-s2idle.conf` unchanged — `AllowSuspend=no`).
+
+**Verification after next 24h+ uptime**:
+
+| Check | Expected |
+|-------|----------|
+| `nvidia-smi -q \| grep Persistence` | `Persistence Mode: Enabled` |
+| `journalctl -b -k \| grep "Xid"` | No Xid 62/154 errors |
+| `journalctl -b -k \| grep "GPU is probably locked"` | No RC watchdog warnings |
+| System uptime > 24h without freeze | No forced reboots needed |
+
+### Files Created/Modified
+
+| File | Change |
+|------|--------|
+| `/etc/modprobe.d/nvidia.conf` | **Created** — VRAM preservation + temp file path |
+| `nvidia-suspend.service` | **Enabled** (was disabled) |
+| `nvidia-resume.service` | Already enabled (unchanged) |
+| `nvidia-hibernate.service` | **Enabled** (was disabled) |
+| `nvidia-persistenced.service` | **Enabled + started** (was disabled) |
+
+### Follow-up
+
+- [ ] **Monitor for 48h** — if Xid 62 recurs with persistence enabled, escalate: file NVIDIA bug for RTX 5060 Xid 62 on Linux 6.19 / driver 590.48
+- [ ] **After next kernel or nvidia-open-dkms update**: verify `/etc/modprobe.d/nvidia.conf` still applies (`cat /sys/module/nvidia/parameters/NVreg_PreserveVideoMemoryAllocations` should return `1`)
+
+---
+
+## 2026-03-17T15:07:00Z — Weekly Maintenance Automation & System Hardening Exercise
+
+**Trigger**: Learning exercise to understand Arch Linux internals (pacman, systemd, security basics).
+
+**Changes applied**:
+
+### 1. Automated Weekly Maintenance (systemd timer)
+
+Created a systemd service + timer that runs every Sunday at 3 AM:
+
+- Refreshes pacman mirrors via `reflector` (if installed)
+- Cleans package cache, keeping last 2 versions (`paccache -rk2`) — first run freed **684 MB**
+- Checks for failed systemd units
+- Detects unmerged `.pacnew`/`.pacsave` config files
+- Logs disk usage on `/`, `/home`, `/boot`
+
+| File | Purpose |
+|------|---------|
+| `/usr/local/bin/arch-maintain.sh` | Maintenance script |
+| `/etc/systemd/system/arch-maintain.service` | Oneshot service unit |
+| `/etc/systemd/system/arch-maintain.timer` | Weekly timer (Sun 03:00, Persistent=true) |
+| `/var/log/arch-maintain.log` | Output log |
+
+### 2. Installed `pacman-contrib`
+
+Required for `paccache` (cache cleanup) and `checkupdates` (pending update count). Was not previously installed — caused initial `exit 127` failures on the service until installed.
+
+### 3. System Report Alias
+
+Added `sysreport` alias to `~/.bashrc` — one-command system health overview showing kernel, uptime, package counts, pending updates, orphans, failed units, pacnew files, and disk usage.
+
+### Packages Installed
+
+| Package | Reason |
+|---------|--------|
+| `pacman-contrib` | Provides `paccache`, `checkupdates`, and other pacman utilities |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `/usr/local/bin/arch-maintain.sh` | Created — maintenance script |
+| `/etc/systemd/system/arch-maintain.service` | Created — systemd oneshot unit |
+| `/etc/systemd/system/arch-maintain.timer` | Created — weekly timer |
+| `~/.bashrc` | Added `sysreport` alias |
+
+---
+
 ## 2026-03-16T20:15:00Z — Fix Deep Sleep (S3) Causing Unrecoverable Hang
 
 **Trigger**: Computer falls into deep sleep (S3) and cannot wake — requires hard power cycle. Previous fix (`/etc/systemd/sleep.conf.d/10-s2idle.conf` with `MemorySleepMode=s2idle`) was insufficient.
