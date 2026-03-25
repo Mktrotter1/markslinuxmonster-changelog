@@ -2,6 +2,124 @@
 
 ---
 
+## 2026-03-25T19:25:00-07:00 — drkonqi 6.6.3-1 unmasked — crash loop fixed
+
+**Trigger**: drkonqi updated to 6.6.3-1 with Plasma 6.6.3, which is past the > 6.6.2-1 threshold for re-testing.
+
+**Root cause (original)**: drkonqi 6.6.1-1 segfaulted in `QTextDocumentFragment::fromHtml()` via `libKF6Notifications.so.6` when rendering crash notification HTML, causing a recursive crash loop.
+
+**Fix applied**:
+```
+systemctl --user unmask drkonqi-coredump-pickup.socket drkonqi-coredump-launcher.socket
+systemctl --user start drkonqi-coredump-launcher.socket
+systemctl --user enable --now drkonqi-coredump-pickup.service
+```
+
+**Changes in 6.6.3**:
+- `drkonqi-coredump-pickup.socket` replaced by `drkonqi-coredump-pickup.service` (runs under `plasma-core.target`)
+- Launcher socket unchanged, still uses ratelimit drop-in (5 launches/30s)
+
+**Result**: Both services active, zero crash loop recurrence after 90s monitoring. No new coredumps. KDE crash dialog GUI restored.
+
+**Follow-up**: Monitor over next few days. If crash loop recurs, re-mask: `systemctl --user mask drkonqi-coredump-launcher.socket`
+
+---
+
+## 2026-03-25T19:20:00-07:00 — Post-reboot verification & documentation update
+
+Rebooted into kernel 6.19.9. Verified system health and updated all documentation.
+
+### Version changes detected (beyond today's packages)
+
+| Component | From | To | Notes |
+|-----------|------|----|-------|
+| KDE Plasma / KWin | 6.6.2 | 6.6.3 | Plasma update pulled in with packages |
+| drkonqi | 6.6.2-1 | 6.6.3-1 | **Now > 6.6.2-1 — ready to unmask sockets and test** |
+| Claude Code | 2.1.47 | 2.1.83 | Updated independently |
+| npm | 11.11.0 | 11.12.0 | Updated with Node.js |
+| systemd | 259.3 | 260.1 | Was already applied, CLAUDE.md was stale |
+
+### Removed from system (no longer installed)
+
+| Component | Was | Notes |
+|-----------|-----|-------|
+| ollama-cuda | 0.17.7 | Package removed, service inactive |
+| CUDA | 13.1.1 | Package removed |
+
+### New services
+
+| Service | Notes |
+|---------|-------|
+| `k3s-agent.service` | K3s Kubernetes agent, 5.5s in boot blame |
+
+### Boot timing (kernel 6.19.9)
+
+```
+firmware 15.5s + loader 1.1s + kernel 9.8s + userspace 16.8s = ~43s to graphical.target
+systemd-analyze total: ~56s (was ~1m24s)
+Top blame: odoo-sync-sheets-all 18.2s, NM-wait-online 7.7s, k3s-agent 5.5s
+```
+
+### Known issues — status after reboot
+
+| Issue | Status |
+|-------|--------|
+| NVIDIA Xid 62/154 | No errors — nvidia-persistenced active |
+| BlueZ hci0 "Failed to set default system config" | **Not seen** — monitoring, may be fixed in 6.19.9 |
+| rtw89 "MAC has already powered on" | **Not seen** — monitoring, may be fixed in 6.19.9 |
+| Bambu Studio bus_lock trap spam | Still present (confirmed in dmesg) |
+| drkonqi crash loop | Still masked — **6.6.3-1 ready to test unmask** |
+
+### Documentation updated
+
+- CLAUDE.md: Software stack versions, removed Ollama/CUDA, added k3s-agent and check-updates-notify services, updated boot timing, updated known issues status
+- TODO.md: Updated drkonqi to actionable, updated BlueZ/rtw89 status, updated boot timing numbers
+
+---
+
+## 2026-03-25T18:00:00-07:00 — Package updates (6 packages, 1 AUR)
+
+Applied reviewed updates via `pacman -Syu` and `paru`.
+
+| Package | From | To | Category |
+|---------|------|----|----------|
+| linux | 6.19.8.arch1-1 | 6.19.9.arch1-1 | Kernel — btrfs transaction abort fixes, NVMe race/OOB fixes, cgroup dead-task visibility fix. **Reboot required.** |
+| nodejs | 25.8.1-1 | 25.8.2-1 | Security — 9 CVEs (2 high: TLS SNICallback crash, HTTP header prototype pollution) |
+| chromium | 146.0.7680.153-1 | 146.0.7680.164-1 | Security patch roll |
+| firefox | 148.0.2-1 | 149.0-1 | Feature + security — XDG portal file picker default on Linux, PDF HW acceleration, split view, built-in VPN |
+| systemd | 260-1 | 260.1-1 | Bugfix — minor (SYSTEMD_COLORS regression, vconsole-setup, test fixes) |
+| beekeeper-studio-bin | 5.5.7-1 | 5.6.3-1 | Feature — Entra ID auth, editor font sizing, fuzzy command palette, pacman dep fix (AUR) |
+
+### Notable for this system
+
+- **btrfs**: 7 fixes including transaction abort on file creation (hash collision DoS), snapshot overflow, set-received ioctl overflow. Directly relevant — root filesystem is btrfs.
+- **NVMe**: Race in `nvme_poll_irqdisable()` and slab-out-of-bounds in `nvme_dbbuf_set`. Affects WD Blue SN580.
+- **cgroup**: Dead tasks no longer visible in `cgroup.procs` — fixes incorrect systemd service state.
+- **Firefox XDG portal**: File picker now routes through `xdg-desktop-portal-kde` on Plasma Wayland — native KDE dialogs instead of GTK3.
+- **Node.js 9 CVEs**: Includes timing-unsafe HMAC comparison and HTTP/2 flow control crash. Relevant for Odoo sync services.
+
+### Follow-up
+
+- Reboot required for kernel 6.19.9 — verify NVIDIA DKMS module built successfully before rebooting
+- Monitor Chromium renderer crash rate after update (baseline: ~1/2 days)
+
+---
+
+## 2026-03-25T00:00:00-07:00 — New: check-updates-notify user timer
+
+Added a weekly update-check notification system via user systemd timer.
+
+| Component | Details |
+|-----------|---------|
+| Script | `~/.local/bin/check-updates-notify` |
+| Service | `~/.config/systemd/user/check-updates-notify.service` (oneshot) |
+| Timer | `~/.config/systemd/user/check-updates-notify.timer` (Mon 10:00, persistent, ±30min jitter) |
+| Log | `~/.local/share/check-updates-notify/check.log` |
+
+Checks pacman and AUR for available updates, sends desktop notifications with clickable changelog links. Enabled and active.
+
+---
+
 ## 2026-03-24T15:00:00-07:00 — System Health Fixes (btrfs balance, coredump cleanup, scrub timer)
 
 **Trigger**: Post-purge health audit revealed fragmented btrfs allocation, coredump accumulation, stale pacman artifacts, orphan packages, and no scheduled btrfs scrub.

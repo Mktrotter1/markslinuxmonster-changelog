@@ -33,21 +33,19 @@ Dual-monitor, side-by-side, combined 5120x1440 @ 96 DPI:
 | Component | Version |
 |-----------|---------|
 | OS | Arch Linux (rolling release) |
-| Kernel | 6.19.6-arch1-1 (x86_64, PREEMPT_DYNAMIC) |
-| Desktop | KDE Plasma 6.6.2 / KWin Wayland (DRM backend) |
+| Kernel | 6.19.9-arch1-1 (x86_64, PREEMPT_DYNAMIC) |
+| Desktop | KDE Plasma 6.6.3 / KWin Wayland (DRM backend) |
 | Display Server | Wayland (kwin_wayland) with XWayland |
-| systemd | 259.3 |
+| systemd | 260.1 |
 | BlueZ | 5.86-4 |
 | NVIDIA Driver | 590.48.01 (open-dkms) |
-| CUDA | 13.1.1 |
-| Ollama | 0.17.7 (ollama-cuda, systemd service, enabled) |
 | Docker | 29.3.0 |
-| Node.js | 25.7.0 |
-| npm | 11.11.0 |
+| Node.js | 25.8.2 |
+| npm | 11.12.0 |
 | Python | 3.14.3 |
 | Go | 1.26.1 |
 | Rust | 1.94.0 |
-| Claude Code | 2.1.47 |
+| Claude Code | 2.1.83 |
 
 ### Filesystem Layout
 
@@ -83,7 +81,7 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | `odoo-sync-admin.timer` | Timer | Daily 5AM | Odoo Cutting Plan Sync — Admin |
 | `tailscaled.service` | Startup | Boot | CEO's Tailscale (`philip.a.greene@`, tailscale0, port 41641) — DO NOT MODIFY |
 | `nvidia-persistenced.service` | Startup | Boot | NVIDIA persistence daemon — prevents GPU idle power state crashes (Xid 62) |
-| `ollama.service` | Startup | Boot | Ollama LLM server (CUDA-accelerated) |
+| `k3s-agent.service` | Startup | Boot | K3s Kubernetes agent |
 | `wg-quick@wg0.service` | Startup | Boot | WireGuard VPN |
 | `docker.service` | Startup | Boot | Container runtime, depends on network-online |
 | `bluetooth.service` | Startup | Boot | BlueZ 5.86-4 |
@@ -91,14 +89,15 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 | `NetworkManager-wait-online.service` | Startup | Boot | Blocks boot for ~7.8s (critical chain bottleneck) |
 | `claude-dir-rotate.timer` | Timer (user) | Daily | Rotates ~/.claude/ session/debug/telemetry files (7-day TTL, 500 MB cap) |
 | `github-auto-pull.timer` | Timer (user) | Daily | Auto-pulls GitHub repos |
+| `check-updates-notify.timer` | Timer (user) | Weekly (Mon 10:00) | Checks pacman/AUR for updates, sends desktop notification |
 
 ### Boot Timing
 
 ```
-To graphical.target: ~36s (firmware 15.8s + loader 3.5s + kernel 4.9s + userspace 11.4s)
-systemd-analyze total: ~1m24s (inflated by post-graphical Odoo sync timers firing at boot)
-Critical chain bottleneck: NetworkManager-wait-online.service (7.8s)
-Top blame: odoo-sync-sheets-all.service 44s, odoo-nabis-order-sync 8.8s, NM-wait-online 7.8s
+To graphical.target: ~43s (firmware 15.5s + loader 1.1s + kernel 9.8s + userspace 16.8s)
+systemd-analyze total: ~56s (improved from ~1m24s after package updates 2026-03-25)
+Critical chain bottleneck: NetworkManager-wait-online.service (7.7s)
+Top blame: odoo-sync-sheets-all.service 18.2s, NM-wait-online 7.7s, k3s-agent 5.5s
 ```
 
 ## Important Paths
@@ -109,9 +108,7 @@ Top blame: odoo-sync-sheets-all.service 44s, odoo-nabis-order-sync 8.8s, NM-wait
 | `/home/mark/repos/Mktrotter1/odoo-api-pushing/` | Odoo sync scripts (sheets, orders) |
 | `/home/mark/repos/Mktrotter1/claude-skills/` | Claude Code skills repo |
 | `/var/lib/systemd/coredump/` | Coredump storage (capped at 1 GB) |
-| `~/.config/systemd/user/drkonqi-coredump-pickup.socket` | Masked (symlink to /dev/null) — boot-time crash pickup |
-| `~/.config/systemd/user/drkonqi-coredump-launcher.socket` | Masked (symlink to /dev/null) — real-time crash handler activation |
-| `~/.config/systemd/user/drkonqi-coredump-launcher.socket.d/ratelimit.conf` | Ratelimit drop-in (inert while socket masked): TriggerLimitBurst=5, TriggerLimitIntervalSec=30s |
+| `~/.config/systemd/user/drkonqi-coredump-launcher.socket.d/ratelimit.conf` | Ratelimit drop-in (safety net): TriggerLimitBurst=5, TriggerLimitIntervalSec=30s |
 | `scripts/claude-dir-rotate.sh` | ~/.claude/ rotation script (7-day TTL, 500 MB cap) |
 | `/etc/systemd/coredump.conf.d/limits.conf` | Coredump limits: MaxUse=1G, KeepFree=2G, ExternalSizeMax=512M, ProcessSizeMax=256M |
 | `/etc/modprobe.d/nvidia.conf` | NVIDIA VRAM preservation: `NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFilePath=/var/tmp` |
@@ -126,20 +123,15 @@ Top blame: odoo-sync-sheets-all.service 44s, odoo-nabis-order-sync 8.8s, NM-wait
 
 ### Cosmetic / Won't Fix
 
-- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` every boot. Realtek BT USB adapter's btrtl driver doesn't support the MGMT Set System Configuration command. Adapter works fine. Upstream BlueZ issue.
-- **rtw89_8851be "MAC has already powered on"**: Kernel error at boot from WiFi PCIe driver. Cosmetic — interface works if brought up. WiFi currently unused (wlan0 down).
+- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` — was every boot, **not seen since kernel 6.19.9** (2026-03-25). Monitoring — may be resolved upstream. Realtek BT USB adapter's btrtl driver didn't support MGMT Set System Configuration command.
+- **rtw89_8851be "MAC has already powered on"**: Was every boot, **not seen since kernel 6.19.9** (2026-03-25). Monitoring — may be resolved upstream. WiFi currently unused (wlan0 down).
 
-### Fully Disabled — Awaiting Upstream Fix
+### Resolved — Monitoring
 
-- **drkonqi 6.6.1+ crash loop regression**: `drkonqi-coredump-launcher` segfaults in `QTextDocumentFragment::fromHtml()` via `libKF6Notifications.so.6` when processing crash notification HTML. Creates recursive crash loop. Regression started with drkonqi 6.6.1-1 (installed 2026-03-02, crashes began by 2026-03-05). Both activation paths are now masked:
-  - **Boot-time pickup**: `drkonqi-coredump-pickup.socket` — masked since 2026-03-11
-  - **Real-time launcher**: `drkonqi-coredump-launcher.socket` — masked since 2026-03-13 (was ratelimited 2026-03-12 to 2026-03-13)
-  - Crash diagnostics remain fully available via `coredumpctl` and `journalctl`. Only the KDE crash GUI dialog is disabled.
-  - **Check on each Plasma update**: `pacman -Qi drkonqi` — if version > 6.6.2-1, unmask both sockets and monitor:
-    ```
-    systemctl --user unmask drkonqi-coredump-pickup.socket drkonqi-coredump-launcher.socket
-    systemctl --user start drkonqi-coredump-launcher.socket
-    ```
+- **drkonqi crash loop (was 6.6.1–6.6.2)**: Fixed in drkonqi 6.6.3-1. Unmasked and re-enabled 2026-03-25. Both services running without crash loop recurrence:
+  - `drkonqi-coredump-launcher.socket` — active (listening), ratelimit drop-in retained as safety net (5 launches/30s)
+  - `drkonqi-coredump-pickup.service` — active, enabled (replaced the old pickup socket in 6.6.3)
+  - If crash loop recurs, re-mask: `systemctl --user mask drkonqi-coredump-launcher.socket`
 
 ### Application-Level
 
