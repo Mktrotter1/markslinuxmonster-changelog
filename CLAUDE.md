@@ -123,7 +123,7 @@ Top blame: odoo-sync-sheets-all.service 18.2s, NM-wait-online 7.7s, k3s-agent 5.
 
 ### Cosmetic / Won't Fix
 
-- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` — was every boot, **not seen since kernel 6.19.9** (2026-03-25). Monitoring — may be resolved upstream. Realtek BT USB adapter's btrtl driver didn't support MGMT Set System Configuration command.
+- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` every boot (confirmed still present on kernel 6.19.9). Realtek BT USB adapter's btrtl driver doesn't support MGMT Set System Configuration. Cosmetic — adapter works fine. Upstream BlueZ issue.
 - **rtw89_8851be "MAC has already powered on"**: Was every boot, **not seen since kernel 6.19.9** (2026-03-25). Monitoring — may be resolved upstream. WiFi currently unused (wlan0 down).
 
 ### Resolved — Monitoring

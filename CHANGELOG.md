@@ -2,6 +2,51 @@
 
 ---
 
+## 2026-03-25T19:50:00-07:00 — System health deep dive & fixes
+
+**Trigger**: Post-reboot crash/bug audit to assess systemic health and processor impact.
+
+### Fixes applied
+
+#### 1. Rebuilt github-watcher venv (was crash-looping every 60s)
+
+`.venv/bin/python` was missing — wiped by Python 3.14 upgrade. Both `github-watcher.service` and `github-auto-pull.service` were failing with status 203/EXEC since boot (~30+ failures in journal).
+
+```
+cd /home/mark/repos/Mktrotter1/github-watcher
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+systemctl --user restart github-watcher.service
+```
+
+Result: Both services restored and running.
+
+#### 2. Fixed coredump ratelimit.conf
+
+`/etc/systemd/system/systemd-coredump@.service.d/ratelimit.conf` had `StartLimitBurst` and `StartLimitIntervalSec` in `[Service]` (wrong) — moved to `[Unit]`. Eliminates systemd warning at boot.
+
+#### 3. Fixed ESP dirty bit
+
+`/dev/nvme0n1p1` (FAT32 ESP) had dirty bit set from unclean unmount. Installed `dosfstools` and ran `fsck.fat -a`. Dirty bit cleared. Boot sector backup diff at offset 65 is cosmetic (not auto-fixed).
+
+#### 4. Corrected BlueZ hci0 status in docs
+
+Initial dmesg grep missed it, but journal confirmed `Failed to set default system config for hci0` is still present on 6.19.9. Updated CLAUDE.md accordingly.
+
+### Crash audit summary
+
+| Binary | Signal | Count | Window | Notes |
+|--------|--------|-------|--------|-------|
+| Slack (Flatpak) | SIGTRAP | 7 | Mar 23–25 | Electron renderer crashes, ~2-3/day. Mar 23 burst cascaded to portal-kde + ksecretd |
+| xdg-desktop-portal-kde | SIGABRT | 4 | Mar 23 | D-Bus cascade from Slack crash |
+| ksecretd | SIGABRT | 1 | Mar 23 | Part of same cascade |
+| tmux 3.6a | SIGSEGV | 1 | Mar 25 | Server segfault creating claude session. Stack in tmux code, not library |
+
+### Hardware health
+
+All clear: CPU 42°C, GPU 43°C/17W, NVMe 38°C, zero MCE/Xid errors, 20 GiB RAM free, 370 GiB disk free.
+
+---
+
 ## 2026-03-25T19:25:00-07:00 — drkonqi 6.6.3-1 unmasked — crash loop fixed
 
 **Trigger**: drkonqi updated to 6.6.3-1 with Plasma 6.6.3, which is past the > 6.6.2-1 threshold for re-testing.
