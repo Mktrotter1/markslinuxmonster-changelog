@@ -2,6 +2,99 @@
 
 ---
 
+## 2026-04-09T15:30:00-07:00 — Propagate hard-learned rules to project CLAUDE.md files
+
+**Trigger**: High-priority TODO — phone Claude sessions were violating rules only stored in desktop memory files. CLAUDE.md is the only durable instruction channel visible to all sessions.
+
+### Audit
+
+Scanned 62 feedback-type memory files across 18 project directories under `~/.claude/projects/`. Cross-referenced against 37 CLAUDE.md files across all 3 GitHub orgs. Identified behavioral rules that existed only in desktop memory but were needed by phone sessions.
+
+### Rules propagated
+
+| Project CLAUDE.md | Rules added | Key additions |
+|-------------------|-------------|---------------|
+| `Mktrotter1/odoo-api-pushing` | 11 hard assertions + 3 working style rules | Read existing scripts before writing, believe-and-fix (don't re-query), verify in Odoo (not just assertions), no silent exceptions, PAV deletion requires SQL (ORM archives), 100% harvest FK resolution, deep ETL audits (FK chains not just counts), DW codes vs Odoo names, veg parent status check, no credentials in output, plans don't create inventory |
+| `Mktrotter1/3d-model-projects` | 8 hard assertions (new section) | No pkill chromium, preserve source STLs, no booleans on thin mesh, verify AMS tray colors, orient/arrange flags, resolve templates before upload, external spool use_ams |
+| `Mktrotter1/mobile-dev` | 4 hard assertions | No pkill chromium, full-stack path check for UX bugs, ttyd reconnect debugging checklist, no hardcoded credentials |
+| `philipagreene/odoo-implementation` | 3 hard assertions | AppSheet→Odoo transformation framing, no silent exceptions, no credentials in output |
+
+### Stale references fixed
+
+- **Key Services table** in this project's CLAUDE.md: removed stale `odoo-sync-appsheet-sheet.timer` (renamed to `odoo-sync-appsheet-export.timer`, now every 20 min export-only), removed disabled `odoo-sync-supervisor.timer`, added 3 missing timers (`odoo-kpi-sync`, `odoo-dw-sync`, `odoo-processing-etl`).
+
+### Follow-up
+
+- Changes are uncommitted in each repo — commit when ready.
+- Future feedback memories should be propagated to CLAUDE.md at time of learning, not batched.
+
+---
+
+## 2026-04-09T07:50:00-07:00 — System health audit, cache cleanup & full update (241 packages)
+
+**Trigger**: Proactive system audit — check for updates, bloat, and service health.
+
+### System update
+
+241 packages upgraded via `pacman -Syu`. Key version bumps:
+
+| Component | From | To |
+|-----------|------|----|
+| Kernel | 6.19.9-arch1-1 | 6.19.11-arch1-1 |
+| NVIDIA driver (open-dkms) | 590.48.01 | 595.58.03 |
+| KDE Plasma | 6.6.3 | 6.6.4 |
+| Qt6 | 6.8.x | 6.11.0 |
+| KWin | 6.6.3 | 6.6.4 |
+| drkonqi | 6.6.3 | 6.6.4 |
+| Chromium | 146.0.7680.164 | 146.0.7680.177 |
+| Docker | 29.3.0 | 29.4.0 |
+| Go | 1.26.1 | 1.26.2 |
+| Rust | 1.94.0 | 1.94.1 |
+| Node.js | 25.8.2 | 25.9.0 |
+| OpenSSL | 3.6.x | 3.6.2 |
+| Tailscale | 1.96.x | 1.96.4 |
+| neovim | 0.12.x | 0.12.1 |
+| dkms | 3.3.0 | 3.4.0 |
+
+DKMS rebuilt nvidia/595.58.03 and openrazer/3.12.0 for kernel 6.19.11 successfully.
+
+### NVIDIA driver changes
+
+nvidia-utils 595.58.03 auto-removed nvidia-suspend, nvidia-hibernate, and nvidia-resume systemd services — no longer needed with open kernel modules. `nvidia-persistenced` remains active. VRAM preservation config unchanged.
+
+### Cache cleanup (~2.1 GB freed)
+
+| Cache | Size cleared |
+|-------|-------------|
+| Paru build cache (`~/.cache/paru/clone/`) | ~1.2 GB |
+| Pip cache | 593.6 MB (1,283 files) |
+| Go build cache | ~325 MB |
+
+Note: qbz music cache (9.4 GB in `~/.cache/qbz/`) intentionally retained — active daily-use library.
+
+### Service changes
+
+- **Docker disabled**: `docker.service` and `docker.socket` stopped and disabled. 0 images, 0 containers, 0 volumes — no active use. Re-enable on demand: `sudo systemctl enable --now docker.service docker.socket`
+- **k3s-agent**: Running but unable to reach server (CEO's service, hands-off).
+
+### System health snapshot
+
+- **Disk**: 103 GB / 465 GB used (23%) — healthy
+- **Failed units**: 0 (system), 0 (user)
+- **Journal**: 119 MB
+- **Coredumps**: 480 MB — 4 Slack SIGTRAP crashes (Flatpak renderer, cosmetic)
+- **Orphan packages**: 0
+- **Btrfs**: Clean, no stale snapshots, scrub scheduled
+- **Pacman cache**: 4.2 GB (already at 2-version retention)
+
+### Pending follow-up
+
+- **Reboot required**: New kernel (6.19.11) and NVIDIA driver (595.58.03) need reboot to activate.
+- **mirrorlist.pacnew**: `/etc/pacman.d/mirrorlist.pacnew` created — merge when convenient.
+- **KWallet**: Plasma 6.6.4 update landed — potential opportunity to re-test KWallet (currently disabled since 2026-03-16).
+
+---
+
 ## 2026-03-25T19:50:00-07:00 — System health deep dive & fixes
 
 **Trigger**: Post-reboot crash/bug audit to assess systemic health and processor impact.

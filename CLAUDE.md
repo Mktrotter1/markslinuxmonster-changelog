@@ -17,7 +17,7 @@ Launch Claude Code from this directory for full machine context when doing syste
 | Bluetooth | Realtek USB (VID:PID 0bda:b850, firmware rtl_bt/rtl8851bu_fw.bin) — USB 1-7, btusb+btrtl drivers |
 | WiFi | Realtek RTL8851BE PCIe 802.11ax (08:00.0) — rtw89_8851be driver, interface wlan0 (down) |
 | Network | Realtek RTL8125 2.5GbE (enp7s0), WireGuard (wg0) |
-| GPU Driver | NVIDIA Open 590.48.01 (nvidia-open-dkms) |
+| GPU Driver | NVIDIA Open 595.58.03 (nvidia-open-dkms) |
 
 ### Display Setup
 
@@ -33,18 +33,18 @@ Dual-monitor, side-by-side, combined 5120x1440 @ 96 DPI:
 | Component | Version |
 |-----------|---------|
 | OS | Arch Linux (rolling release) |
-| Kernel | 6.19.9-arch1-1 (x86_64, PREEMPT_DYNAMIC) |
-| Desktop | KDE Plasma 6.6.3 / KWin Wayland (DRM backend) |
+| Kernel | 6.19.11-arch1-1 (x86_64, PREEMPT_DYNAMIC) |
+| Desktop | KDE Plasma 6.6.4 / KWin Wayland (DRM backend) |
 | Display Server | Wayland (kwin_wayland) with XWayland |
 | systemd | 260.1 |
 | BlueZ | 5.86-4 |
-| NVIDIA Driver | 590.48.01 (open-dkms) |
-| Docker | 29.3.0 |
-| Node.js | 25.8.2 |
-| npm | 11.12.0 |
+| NVIDIA Driver | 595.58.03 (open-dkms) |
+| Docker | 29.4.0 (disabled — no containers in use) |
+| Node.js | 25.9.0 |
+| npm | 11.12.1 |
 | Python | 3.14.3 |
-| Go | 1.26.1 |
-| Rust | 1.94.0 |
+| Go | 1.26.2 |
+| Rust | 1.94.1 |
 | Claude Code | 2.1.83 |
 
 ### Filesystem Layout
@@ -74,16 +74,18 @@ Compression: zstd:3, SSD optimizations: discard=async, space_cache=v2.
 
 | Service | Type | Schedule | Notes |
 |---------|------|----------|-------|
-| `odoo-sync-sheets-all.timer` | Timer | Every 15 min | Syncs 7 Google Sheets to Odoo 19 Enterprise |
-| `odoo-sync-appsheet-sheet.timer` | Timer | Every 15 min | Odoo AppSheet Product Sheet Sync |
-| `odoo-sync-supervisor.timer` | Timer | Every 15 min | Odoo Cutting Plan Sync — Supervisor |
+| `odoo-sync-sheets-all.timer` | Timer | Every 15 min | Syncs 8 steps: Google Sheets + MPS merge + alias sync to Odoo 19 Enterprise |
+| `odoo-sync-appsheet-export.timer` | Timer | Every 20 min | Odoo → AppSheet Product Sheet export (export-only) |
 | `odoo-nabis-order-sync.timer` | Timer | Every 60 min | Nabis order sync to Odoo |
 | `odoo-sync-admin.timer` | Timer | Daily 5AM | Odoo Cutting Plan Sync — Admin |
+| `odoo-kpi-sync.timer` | Timer | Every 15 min | MySQL KPI → DW kpi schema (261K rows) |
+| `odoo-dw-sync.timer` | Timer | Every 6 hours | Odoo → DW odoo schema (13K rows) |
+| `odoo-processing-etl.timer` | Timer | Every 15 min | Processing ETL: drying, machine_trim, hand_trim, sorting |
 | `tailscaled.service` | Startup | Boot | CEO's Tailscale (`philip.a.greene@`, tailscale0, port 41641) — DO NOT MODIFY |
 | `nvidia-persistenced.service` | Startup | Boot | NVIDIA persistence daemon — prevents GPU idle power state crashes (Xid 62) |
 | `k3s-agent.service` | Startup | Boot | K3s Kubernetes agent |
 | `wg-quick@wg0.service` | Startup | Boot | WireGuard VPN |
-| `docker.service` | Startup | Boot | Container runtime, depends on network-online |
+| `docker.service` | Disabled | — | Container runtime, disabled 2026-04-09 (no containers in use). Re-enable on demand: `sudo systemctl enable --now docker.service docker.socket` |
 | `bluetooth.service` | Startup | Boot | BlueZ 5.86-4 |
 | `NetworkManager.service` | Startup | Boot | Network management, ~1s startup |
 | `NetworkManager-wait-online.service` | Startup | Boot | Blocks boot for ~7.8s (critical chain bottleneck) |
@@ -118,17 +120,17 @@ Top blame: odoo-sync-sheets-all.service 18.2s, NM-wait-online 7.7s, k3s-agent 5.
 
 ### GPU Stability — Mitigated (2026-03-20)
 
-- **NVIDIA RTX 5060 Xid 62/154 GPU lockups**: GSP firmware RPC timeout causes GPU to lock, display becomes unrecoverable. Mitigated by enabling `nvidia-persistenced` (keeps GPU in stable managed state), `NVreg_PreserveVideoMemoryAllocations=1`, and NVIDIA suspend/hibernate services. Sleep remains fully disabled. If Xid 62 recurs, file NVIDIA bug for RTX 5060 (GB206 Blackwell) on kernel 6.19 / driver 590.48.
+- **NVIDIA RTX 5060 Xid 62/154 GPU lockups**: GSP firmware RPC timeout causes GPU to lock, display becomes unrecoverable. Mitigated by enabling `nvidia-persistenced` (keeps GPU in stable managed state), `NVreg_PreserveVideoMemoryAllocations=1`. NVIDIA suspend/hibernate/resume services were auto-removed by driver 595.58.03 (no longer needed with open kernel modules). Sleep remains fully disabled. If Xid 62 recurs, file NVIDIA bug for RTX 5060 (GB206 Blackwell) on kernel 6.19 / driver 595.58.
 - **Sleep fully disabled**: `/etc/systemd/sleep.conf.d/10-s2idle.conf` blocks all suspend/hibernate. This is intentional — DO NOT re-enable. The AMD X870 + RTX 5060 combination does not reliably resume from any sleep state.
 
 ### Cosmetic / Won't Fix
 
-- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` every boot (confirmed still present on kernel 6.19.9). Realtek BT USB adapter's btrtl driver doesn't support MGMT Set System Configuration. Cosmetic — adapter works fine. Upstream BlueZ issue.
-- **rtw89_8851be "MAC has already powered on"**: Was every boot, **not seen since kernel 6.19.9** (2026-03-25). Monitoring — may be resolved upstream. WiFi currently unused (wlan0 down).
+- **BlueZ hci0 log noise**: `Failed to set default system config for hci0` every boot (confirmed still present through kernel 6.19.11). Realtek BT USB adapter's btrtl driver doesn't support MGMT Set System Configuration. Cosmetic — adapter works fine. Upstream BlueZ issue.
+- **rtw89_8851be "MAC has already powered on"**: Was every boot, **not seen since kernel 6.19.9** (2026-03-25). Now on 6.19.11 — likely resolved upstream. WiFi currently unused (wlan0 down).
 
 ### Resolved — Monitoring
 
-- **drkonqi crash loop (was 6.6.1–6.6.2)**: Fixed in drkonqi 6.6.3-1. Unmasked and re-enabled 2026-03-25. Both services running without crash loop recurrence:
+- **drkonqi crash loop (was 6.6.1–6.6.2)**: Fixed in drkonqi 6.6.3-1, now on 6.6.4-1. Unmasked and re-enabled 2026-03-25. Both services running without crash loop recurrence:
   - `drkonqi-coredump-launcher.socket` — active (listening), ratelimit drop-in retained as safety net (5 launches/30s)
   - `drkonqi-coredump-pickup.service` — active, enabled (replaced the old pickup socket in 6.6.3)
   - If crash loop recurs, re-mask: `systemctl --user mask drkonqi-coredump-launcher.socket`
@@ -137,7 +139,7 @@ Top blame: odoo-sync-sheets-all.service 18.2s, NM-wait-online 7.7s, k3s-agent 5.
 
 - **KWallet disabled** (2026-03-16): kwalletd6 enters zombie state — responds to `isEnabled` but hangs on all wallet access (`wallets`, `isOpen`, `open`). Portal registration fails (`App info not found for 'org.kde.kwalletd'`). Disabled via `~/.config/kwalletrc` (`Enabled=false`). Chromium uses `--password-store=basic` via `~/.config/chromium-flags.conf`. Old wallet backed up to `~/.local/share/kwalletd/backup-20260316/`. Re-enable after Plasma update and test via KDE Wallet Manager GUI with PAM auto-unlock.
 - **Bambu Studio bus_lock trap spam**: `bambustu_main` (Flatpak com.bambulab.BambuStudio 2.5.0.66) triggers `x86/split lock detection: #DB` kernel warnings every ~30 seconds while running. ~10 traps per burst, `handle_bus_lock` suppression messages in between. Cosmetic performance warning — split-lock operations are slow but functional. Upstream Bambu Studio issue.
-- **Chromium renderer crashes**: Renderer subprocesses occasionally crash (SIGILL/SIGTRAP). Coredumps are truncated at 53+ MB. Not a regression — has been occurring across boots. Monitor frequency.
+- **Chromium renderer crashes**: Renderer subprocesses occasionally crash (SIGILL/SIGTRAP). Coredumps are truncated at 53+ MB. Not a regression — has been occurring across boots. Monitor frequency. Current: Chromium 146.0.7680.177.
 
 ## User Groups
 
