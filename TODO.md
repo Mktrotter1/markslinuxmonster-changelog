@@ -28,6 +28,8 @@ _(none currently tracked)_
 
 ## Backlog
 
+- [ ] **Build Claude CLI chat interface** — Interactive terminal chat using Anthropic SDK with streaming responses, prompt_toolkit (readline history, autocomplete), rich (markdown rendering), Click command groups (`/history`, `/clear`, `/model`), Ctrl+C handling, .env config. Follows existing Click + tabulate + dotenv patterns from sleepdata-shell and marksclock. ~2-3 hour build. Target repo TBD.
+- [ ] **Investigate update: chromium 146.0.7680.177 → 147.0.7727.55** (2026-04-13): Review scope and effect before applying. [Changelog](https://chromereleases.googleblog.com/)
 - [ ] **Merge mirrorlist.pacnew**: `/etc/pacman.d/mirrorlist.pacnew` created by pacman-mirrorlist 20260406-1. Merge when convenient.
 - [ ] **Re-test KWallet after Plasma 6.6.4**: KWallet disabled since 2026-03-16. Plasma 6.6.4 landed — test via KDE Wallet Manager GUI with PAM auto-unlock.
 - [ ] **AUR updates pending**: android-sdk-build-tools, beekeeper-studio-bin, mycli, qbz-bin — run `yay -Sua` when ready.
